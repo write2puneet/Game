@@ -1,13 +1,13 @@
 # Core
 streamlit>=1.35.0
-anthropic>=0.26.0
+google-generativeai>=0.7.0
 
 # Data & State
 pandas>=2.2.0
 pydantic>=2.7.0
 python-dotenv>=1.0.0
 
-# Database (SQLite via built-in + ORM)
+# Database
 sqlalchemy>=2.0.0
 
 # Visualisation
@@ -16,9 +16,6 @@ plotly>=5.22.0
 # Utilities
 tenacity>=8.3.0
 loguru>=0.7.0
-
-# Auth
-streamlit-authenticator>=0.3.2
 
 # UI extras
 streamlit-extras>=0.4.2
