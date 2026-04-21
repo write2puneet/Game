@@ -12,6 +12,9 @@ sqlalchemy>=2.0.0
 # Visualisation
 plotly>=5.22.0
 
+# Audio TTS (free, no API key needed)
+gTTS>=2.5.1
+
 # Utilities
 loguru>=0.7.0
 
