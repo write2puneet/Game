@@ -644,19 +644,24 @@ def page_practice():
                 unsafe_allow_html=True,
             )
 
-    col_input, col_btn = st.columns([5, 1])
-    with col_input:
-        user_input = st.text_input(
-            "Your response", key="chat_input",
-            placeholder="What do you say to the customer?",
-            label_visibility="collapsed",
-        )
-    with col_btn:
-        end_clicked = st.button("End & Score", type="primary")
+    # Use a form so submitting clears the input box automatically
+    with st.form(key="chat_form", clear_on_submit=True):
+        col_input, col_send, col_end = st.columns([5, 1, 1])
+        with col_input:
+            user_input = st.text_input(
+                "Your response",
+                placeholder="What do you say to the customer?",
+                label_visibility="collapsed",
+            )
+        with col_send:
+            send_clicked = st.form_submit_button("Send ➤", use_container_width=True)
+        with col_end:
+            end_clicked = st.form_submit_button("End & Score", use_container_width=True,
+                                                type="primary")
 
     # Send message
-    if user_input:
-        msgs.append({"role": "user", "content": user_input})
+    if send_clicked and user_input.strip():
+        msgs.append({"role": "user", "content": user_input.strip()})
         with st.spinner("Customer responding…"):
             try:
                 reply = chat_as_customer(profile, msgs)
@@ -665,7 +670,6 @@ def page_practice():
                 st.stop()
         msgs.append({"role": "assistant", "content": reply})
         ss_set("messages", msgs)
-        st.session_state["chat_input"] = ""
         st.rerun()
 
     # End and score
