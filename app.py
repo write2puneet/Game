@@ -325,17 +325,23 @@ def load_salespeople() -> pd.DataFrame:
 # ── Gemini client ─────────────────────────────────────────────────────────────
 def get_gemini_model(system_instruction: str):
     """Return a configured Gemini GenerativeModel with the given system instruction."""
-    api_key = (
-        os.getenv("GEMINI_API_KEY")
-        or st.secrets.get("GEMINI_API_KEY", "")
-    )
+    # Try .env first, then Streamlit secrets
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets["GEMINI_API_KEY"]
+        except (KeyError, FileNotFoundError):
+            api_key = ""
+
     if not api_key:
         st.error(
-            "⚠️ GEMINI_API_KEY not set.\n\n"
-            "Get a free key at https://aistudio.google.com and add it to "
-            "`.env` or Streamlit secrets."
+            "⚠️ GEMINI_API_KEY not found.\n\n"
+            "On Streamlit Cloud: go to **Manage app → Settings → Secrets** and add:\n"
+            "```\nGEMINI_API_KEY = \"AIza...your-key\"\n```\n"
+            "Get a free key at https://aistudio.google.com"
         )
         st.stop()
+
     genai.configure(api_key=api_key)
     return genai.GenerativeModel(
         model_name=GEMINI_MODEL,
@@ -420,7 +426,6 @@ def _to_gemini_history(messages: list) -> list:
     return history
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=6))
 def chat_as_customer(profile: dict, messages: list) -> str:
     """
     Send the conversation history to Gemini playing the customer persona.
@@ -444,7 +449,6 @@ def chat_as_customer(profile: dict, messages: list) -> str:
     return response.text.strip()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=6))
 def score_session(transcript: list) -> dict:
     """Score the completed transcript and return a parsed dict."""
     model = get_gemini_model(scoring_system())
@@ -623,7 +627,11 @@ def page_practice():
     # Auto-trigger customer opening line
     if not msgs:
         with st.spinner("Customer entering the store…"):
-            opening = chat_as_customer(profile, [])
+            try:
+                opening = chat_as_customer(profile, [])
+            except Exception as e:
+                st.error(f"Gemini API error: {e}")
+                st.stop()
         msgs = [{"role": "assistant", "content": opening}]
         ss_set("messages", msgs)
 
