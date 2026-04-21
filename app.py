@@ -2,23 +2,21 @@
 Mansam Parfumery — Gamified AI Sales Coaching Agent
 ====================================================
 Streamlit MVP · Phase 1 (English, 3 profiles, Sale+Service scoring)
-LLM: Google Gemini 2.0 Flash (free tier — 1,500 req/day)
+LLM: Groq — Llama 3.3 70B (free tier · 30 RPM · 1,000 req/day)
 
-Get your free key at: https://aistudio.google.com
-Set it in .env or Streamlit secrets:
-  GEMINI_API_KEY=AIza...
+Get your free key at: https://console.groq.com
+Set it in Streamlit secrets:
+  GROQ_API_KEY = "gsk_..."
 """
 
 import os
 import json
 import datetime
 import streamlit as st
-import google.generativeai as genai
+from groq import Groq
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, wait_exponential
 from loguru import logger
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -52,7 +50,6 @@ html, body, [class*="css"] {
     background-color: var(--cream);
     color: var(--dark);
 }
-
 h1, h2, h3 { font-family: 'Cormorant Garamond', serif; color: var(--dark); }
 
 .stButton > button {
@@ -141,16 +138,15 @@ div[data-testid="stSidebar"] * { color: var(--gold-lt) !important; }
 """, unsafe_allow_html=True)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-GEMINI_MODEL = "gemini-2.0-flash"
+GROQ_MODEL       = "llama-3.3-70b-versatile"
+POINTS_PARTICIP  = 10
+POINTS_GROWTH    = 20
 
 TIER_CONFIG = {
     1: {"name": "Beginner",     "sessions_needed": 10, "avg_score_needed": 6},
     2: {"name": "Intermediate", "sessions_needed": 15, "avg_score_needed": 7},
     3: {"name": "Expert",       "sessions_needed": 999, "avg_score_needed": 9},
 }
-
-POINTS_PARTICIPATION = 10
-POINTS_GROWTH        = 20
 
 # ── Customer profiles ─────────────────────────────────────────────────────────
 PROFILES = {
@@ -207,14 +203,14 @@ PROFILES = {
     },
 }
 
-# ── Knowledge base (expand with real Mansam catalogue before go-live) ─────────
+# ── Knowledge base ────────────────────────────────────────────────────────────
 KNOWLEDGE_BASE = """
 MANSAM PARFUMERY — KNOWLEDGE BASE (PHASE 1 SAMPLE)
 
 BRAND POSITIONING
 Mansam is a luxury Arabian perfumery house rooted in the heritage of the Arabian Peninsula.
-Every fragrance is crafted to carry a story — of desert landscapes, ancient trade routes,
-and the intimate rituals of Saudi hospitality. The brand promise: authentic luxury, never imitation.
+Every fragrance carries a story — of desert landscapes, ancient trade routes, and the intimate
+rituals of Saudi hospitality. Brand promise: authentic luxury, never imitation.
 
 CUSTOMER SERVICE STANDARDS
 - Greet every customer warmly within 30 seconds of entry.
@@ -222,54 +218,51 @@ CUSTOMER SERVICE STANDARDS
 - Offer a scent strip or skin test before pitching price.
 - Never rush. Silence while a customer smells is sacred — do not fill it with chatter.
 - Close with a suggestion, not a push: "I think this one found you."
-- Always offer to wrap and include a handwritten note for gifts.
+- Always offer gift wrapping and a handwritten note.
 
 PRODUCT CATALOGUE (SAMPLE)
 1. Al Majd (العظمة) — Oud & Rose
    Family: Oriental Woody | Notes: Agarwood / Taif Rose / Amber
-   Concentration: Extrait | Sizes: 30ml SAR 650 / 50ml SAR 950
+   Concentration: Extrait | 30ml SAR 650 / 50ml SAR 950
    Story: Named for glory — worn at weddings and royal gatherings for generations.
 
 2. Sahara Musk — White Musk & Sandalwood
    Family: Soft Oriental | Notes: White Musk / Sandalwood / Vanilla
-   Concentration: EDP | Sizes: 50ml SAR 380 / 100ml SAR 520
+   Concentration: EDP | 50ml SAR 380 / 100ml SAR 520
    Story: The gentlest whisper of the desert at dawn. Perfect for daily wear and gifts.
 
 3. Darb Al Hind (درب الهند) — Spiced Oud
    Family: Spicy Oriental | Notes: Indian Oud / Saffron / Cardamom / Patchouli
-   Concentration: EDP Intense | Sizes: 50ml SAR 820
+   Concentration: EDP Intense | 50ml SAR 820
    Story: Named for the ancient incense trade route. Bold, complex, unforgettable.
 
 OBJECTION HANDLING
-- "Too expensive": "This is an extrait — twice the concentration of a standard EDP.
-  You wear it 12–14 hours per application. Per wear, it is more economical than it looks."
-- "Not sure about oud": "Let me start with Sahara Musk — soft, no smoke, just warmth.
-  Then we can travel further if you'd like."
-- "Already have perfume": "A great collection needs variety. This one is for occasions
-  when you want to be remembered."
+- "Too expensive": Explain extrait concentration = 12-14 hours wear, more economical per use.
+- "Not sure about oud": Start with Sahara Musk — soft, no smoke, just warmth.
+- "Already have perfume": A great collection needs variety — this is for occasions to be remembered.
 
-STORYTELLING APPROACH
-Open with place, not product — describe the landscape or moment the fragrance was inspired by,
+STORYTELLING
+Open with place, not product. Describe the landscape or moment the fragrance was inspired by,
 then let the customer smell before naming the price.
 """
 
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PATH = "mansam_coach.db"
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+engine  = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
 def init_db():
     with engine.connect() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS sessions (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                salesperson  TEXT    NOT NULL,
-                profile_id   INTEGER NOT NULL,
-                sale_score   REAL,
-                svc_score    REAL,
-                points       INTEGER DEFAULT 0,
-                transcript   TEXT,
-                debrief      TEXT,
-                created_at   TEXT DEFAULT (datetime('now'))
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                salesperson TEXT    NOT NULL,
+                profile_id  INTEGER NOT NULL,
+                sale_score  REAL,
+                svc_score   REAL,
+                points      INTEGER DEFAULT 0,
+                transcript  TEXT,
+                debrief     TEXT,
+                created_at  TEXT DEFAULT (datetime('now'))
             )
         """))
         conn.execute(text("""
@@ -289,8 +282,7 @@ def upsert_salesperson(username: str, display_name: str):
     with engine.connect() as conn:
         conn.execute(text("""
             INSERT INTO salespeople (username, display_name)
-            VALUES (:u, :d)
-            ON CONFLICT(username) DO NOTHING
+            VALUES (:u, :d) ON CONFLICT(username) DO NOTHING
         """), {"u": username, "d": display_name})
         conn.commit()
 
@@ -298,8 +290,8 @@ def save_session(salesperson, profile_id, sale, svc, points, transcript, debrief
     with engine.connect() as conn:
         conn.execute(text("""
             INSERT INTO sessions
-              (salesperson, profile_id, sale_score, svc_score, points, transcript, debrief)
-            VALUES (:sp, :pid, :sale, :svc, :pts, :tx, :db)
+              (salesperson,profile_id,sale_score,svc_score,points,transcript,debrief)
+            VALUES (:sp,:pid,:sale,:svc,:pts,:tx,:db)
         """), dict(sp=salesperson, pid=profile_id, sale=sale, svc=svc,
                    pts=points, tx=json.dumps(transcript), db=debrief))
         conn.execute(text("""
@@ -310,7 +302,7 @@ def save_session(salesperson, profile_id, sale, svc, points, transcript, debrief
 def load_sessions(salesperson: str) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(
-            "SELECT * FROM sessions WHERE salesperson = :sp ORDER BY created_at DESC",
+            "SELECT * FROM sessions WHERE salesperson=:sp ORDER BY created_at DESC",
             conn, params={"sp": salesperson}
         )
 
@@ -322,31 +314,23 @@ def load_salespeople() -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql("SELECT * FROM salespeople", conn)
 
-# ── Gemini client ─────────────────────────────────────────────────────────────
-def get_gemini_model(system_instruction: str):
-    """Return a configured Gemini GenerativeModel with the given system instruction."""
-    # Try .env first, then Streamlit secrets
-    api_key = os.getenv("GEMINI_API_KEY", "")
+# ── Groq client ───────────────────────────────────────────────────────────────
+def get_client() -> Groq:
+    api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
         try:
-            api_key = st.secrets["GEMINI_API_KEY"]
+            api_key = st.secrets["GROQ_API_KEY"]
         except (KeyError, FileNotFoundError):
             api_key = ""
-
     if not api_key:
         st.error(
-            "⚠️ GEMINI_API_KEY not found.\n\n"
-            "On Streamlit Cloud: go to **Manage app → Settings → Secrets** and add:\n"
-            "```\nGEMINI_API_KEY = \"AIza...your-key\"\n```\n"
-            "Get a free key at https://aistudio.google.com"
+            "⚠️ **GROQ_API_KEY not found.**\n\n"
+            "1. Get a free key at https://console.groq.com\n"
+            "2. On Streamlit Cloud go to **Manage app → Settings → Secrets** and add:\n"
+            "```\nGROQ_API_KEY = \"gsk_...\"\n```"
         )
         st.stop()
-
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        system_instruction=system_instruction,
-    )
+    return Groq(api_key=api_key)
 
 # ── Prompt builders ───────────────────────────────────────────────────────────
 def persona_system(profile: dict) -> str:
@@ -355,48 +339,49 @@ def persona_system(profile: dict) -> str:
 CUSTOMER PROFILE: {profile['name']}
 PERSONALITY: {profile['personality']}
 MOTIVATION: {profile['brief']}
-OPENING LINE (use this when the session starts): {profile['opening_line']}
+OPENING LINE (use this to open the session): {profile['opening_line']}
 EMOTIONAL TRIGGERS: {', '.join(profile['triggers'])}
 TYPICAL OBJECTIONS:
 {chr(10).join('- ' + o for o in profile['objections'])}
 BUY SIGNAL: {profile['buy_signal']}
 
-BRAND KNOWLEDGE (what the customer may ask about):
+BRAND KNOWLEDGE:
 {KNOWLEDGE_BASE}
 
 RULES:
-- Stay in character at all times. Never break the fourth wall or mention you are an AI.
-- Be realistic — push back naturally, ask questions, express hesitation.
-- React warmly to good selling technique; go cooler to poor technique.
-- Keep responses to 2–4 sentences — you are a customer, not an essay writer.
-- Speak naturally in English (Phase 1).
-- When the buy signal condition is met, express genuine interest in purchasing.
+- Stay in character at all times. Never reveal you are an AI.
+- React realistically — push back, ask questions, show hesitation.
+- Warm up naturally when the salesperson uses good technique.
+- Go cooler when the salesperson rushes or ignores your concerns.
+- Keep responses to 2–4 sentences — you are a customer, not a narrator.
+- Speak natural English (Phase 1).
+- When the buy signal is met, show genuine interest in purchasing.
 """
 
 def scoring_system() -> str:
-    return f"""You are an expert sales coach evaluating a role-play session transcript from Mansam Parfumery.
+    return f"""You are an expert sales coach scoring a role-play transcript from Mansam Parfumery.
 
 KNOWLEDGE BASE:
 {KNOWLEDGE_BASE}
 
-SCORING RUBRIC — SALE (1–10): Can the salesperson close?
-10  Perfect needs discovery, compelling story, all objections handled, natural close, upsell attempted
-8–9 Strong with minor gaps
-6–7 Adequate — identified needs, made recommendation, weak close or missed upsell
-4–5 Partial — some product knowledge but poor objection handling or no close attempt
-2–3 Minimal — relied on customer to drive, little technique
-1   No selling behaviour observed
+SALE SCORE (1–10) — Can the salesperson close?
+10  Perfect needs discovery, storytelling, all objections handled, natural close + upsell
+8–9 Strong, minor gaps
+6–7 Adequate — identified need, made recommendation, weak close or missed upsell
+4–5 Partial — some knowledge, poor objection handling or no close attempt
+2–3 Minimal selling behaviour
+1   No selling behaviour
 
-SCORING RUBRIC — SERVICE (1–10): Does the customer feel cared for?
+SERVICE SCORE (1–10) — Does the customer feel cared for?
 10  Warm, patient, culturally appropriate, active listening, never rushed
-8–9 Mostly warm with minor lapses
-6–7 Generally polite but mechanical or slightly rushed
-4–5 Transactional — no genuine connection built
-2–3 Cold or impatient at moments
-1   Rude, dismissive, or inappropriate
+8–9 Mostly warm, minor lapses
+6–7 Polite but mechanical or slightly rushed
+4–5 Transactional, no real connection
+2–3 Cold or impatient
+1   Rude or dismissive
 
-IMPORTANT: Respond ONLY with a valid JSON object. No markdown fences, no extra text.
-Use this exact structure:
+CRITICAL: Reply with ONLY a valid JSON object. No markdown, no explanation, no extra text.
+Exact structure required:
 {{
   "sale_score": <integer 1-10>,
   "sale_justification": "<one sentence>",
@@ -411,96 +396,106 @@ Use this exact structure:
 }}
 """
 
-# ── Gemini chat helpers ───────────────────────────────────────────────────────
-def _to_gemini_history(messages: list) -> list:
-    """
-    Convert our internal message list [{"role":"user"|"assistant","content":"..."}]
-    to Gemini's format [{"role":"user"|"model","parts":["..."]}].
-    Gemini requires conversation to start with a user turn and alternate strictly.
-    We filter out any leading assistant messages.
-    """
-    history = []
-    for m in messages:
-        role = "model" if m["role"] == "assistant" else "user"
-        history.append({"role": role, "parts": [m["content"]]})
-    return history
-
-
+# ── LLM calls ─────────────────────────────────────────────────────────────────
 def chat_as_customer(profile: dict, messages: list) -> str:
     """
-    Send the conversation history to Gemini playing the customer persona.
-    messages: list of {"role": "user"|"assistant", "content": "..."}
+    Send conversation history to Groq playing the customer persona.
+    messages: [{"role": "user"|"assistant", "content": "..."}]
     """
-    model = get_gemini_model(persona_system(profile))
+    client = get_client()
 
-    # Separate history from the last user message
+    groq_messages = [{"role": "system", "content": persona_system(profile)}]
+
     if not messages:
-        # First turn — ask persona to deliver opening line
-        response = model.generate_content(
-            "[Session starts. You are now in the store. Deliver your opening line naturally.]"
+        groq_messages.append({
+            "role": "user",
+            "content": "[Session starts. You are now in the store. Deliver your opening line naturally.]"
+        })
+    else:
+        for m in messages:
+            groq_messages.append({"role": m["role"], "content": m["content"]})
+
+    try:
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=groq_messages,
+            max_tokens=200,
+            temperature=0.85,
         )
-        return response.text.strip()
-
-    gemini_history = _to_gemini_history(messages[:-1])
-    last_msg = messages[-1]["content"]
-
-    chat = model.start_chat(history=gemini_history)
-    response = chat.send_message(last_msg)
-    return response.text.strip()
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Groq chat error: {e}")
+        raise e
 
 
 def score_session(transcript: list) -> dict:
-    """Score the completed transcript and return a parsed dict."""
-    model = get_gemini_model(scoring_system())
+    """Score the completed transcript. Returns parsed dict."""
+    client = get_client()
 
     transcript_text = "\n".join(
         f"{'SALESPERSON' if m['role'] == 'user' else 'CUSTOMER'}: {m['content']}"
         for m in transcript
     )
-    prompt = f"Please score this sales role-play session:\n\n{transcript_text}"
-    response = model.generate_content(prompt)
-    raw = response.text.strip()
 
-    # Strip markdown fences if Gemini adds them anyway
-    if raw.startswith("```"):
-        parts = raw.split("```")
-        raw = parts[1] if len(parts) > 1 else raw
-        if raw.startswith("json"):
-            raw = raw[4:].strip()
+    try:
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": scoring_system()},
+                {"role": "user",   "content": f"Score this session:\n\n{transcript_text}"},
+            ],
+            max_tokens=800,
+            temperature=0.2,   # low temp for consistent scoring
+        )
+        raw = response.choices[0].message.content.strip()
 
-    return json.loads(raw)
+        # Strip markdown fences just in case
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+
+        return json.loads(raw)
+
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parse error: {e} | raw: {raw}")
+        raise ValueError(f"Model returned invalid JSON. Raw response: {raw[:300]}")
+    except Exception as e:
+        logger.error(f"Groq scoring error: {e}")
+        raise e
 
 
 # ── Debrief builder ───────────────────────────────────────────────────────────
 def build_debrief(scores: dict, sp_name: str,
-                  prev_sale_avg: float, prev_svc_avg: float,
+                  prev_sale: float, prev_svc: float,
                   points_earned: int, growth_bonus: bool) -> str:
     sale = scores["sale_score"]
     svc  = scores["service_score"]
+    perf_pts = int((sale + svc) * 5)
 
     growth_msg = ""
-    if prev_sale_avg > 0 and sale > prev_sale_avg:
-        growth_msg += f"Your Sale score of {sale} beats your previous average of {prev_sale_avg:.1f}. "
-    if prev_svc_avg > 0 and svc > prev_svc_avg:
-        growth_msg += f"Your Service score of {svc} beats your previous average of {prev_svc_avg:.1f}. "
+    if prev_sale > 0 and sale > prev_sale:
+        growth_msg += f"Your Sale score of {sale} beats your previous average of {prev_sale:.1f}. "
+    if prev_svc > 0 and svc > prev_svc:
+        growth_msg += f"Your Service score of {svc} beats your previous average of {prev_svc:.1f}. "
     if growth_msg:
         growth_msg = "📈 " + growth_msg.strip()
 
     strong = "\n".join(f"  ✦ {p}" for p in scores["strong_points"])
-    areas = "\n".join(
+    areas  = "\n".join(
         f"  → {a['what']}\n"
         f"    Why it matters: {a['why']}\n"
         f"    Try next time: \"{a['suggestion']}\""
         for a in scores["improvement_areas"]
     )
-    perf_pts = int((sale + svc) * 5)
     growth_line = f"  +{POINTS_GROWTH} Growth bonus — improved on last session!\n" if growth_bonus else ""
 
     return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   SESSION DEBRIEF — Mansam Parfumery
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Well done for completing this session, {sp_name}. Every practice session makes you sharper on the floor — and today you showed real commitment.
+Well done for completing this session, {sp_name}. Every practice makes you sharper on the floor.
 
 ★ WHAT YOU DID WELL
 {strong}
@@ -514,8 +509,8 @@ Well done for completing this session, {sp_name}. Every practice session makes y
 
 {growth_msg}
 
-◎ POINTS EARNED THIS SESSION
-  +{POINTS_PARTICIPATION} Participation
+◎ POINTS EARNED
+  +{POINTS_PARTICIP} Participation
   +{perf_pts} Performance  ({sale + svc}/20 combined)
 {growth_line}  Total this session: {points_earned} points
 
@@ -534,7 +529,7 @@ def ss_set(key, val):
     st.session_state[key] = val
 
 
-# ── UI Components ─────────────────────────────────────────────────────────────
+# ── UI helpers ────────────────────────────────────────────────────────────────
 def metric_card(label, value, col):
     col.markdown(f"""
     <div class="metric-card">
@@ -574,7 +569,7 @@ def render_sidebar():
             unsafe_allow_html=True,
         )
         st.divider()
-        st.caption("Phase 1 MVP · English · 3 profiles\nPowered by Gemini 2.0 Flash (free)")
+        st.caption("Phase 1 MVP · English · 3 profiles\nPowered by Groq · Llama 3.3 70B (free)")
     return page
 
 
@@ -586,7 +581,7 @@ def page_practice():
         st.info("👈 Enter your name in the sidebar to begin.")
         return
 
-    # ── Profile selection screen ──
+    # Profile picker
     if not ss("session_active"):
         st.markdown("### Choose Your Customer Profile")
         cols = st.columns(3)
@@ -595,7 +590,7 @@ def page_practice():
                 st.markdown(f"**{p['emoji']} {p['name']}**")
                 st.caption(p["brief"])
                 st.caption(f"Difficulty: {'★' * p['difficulty']}{'☆' * (3 - p['difficulty'])}")
-                if st.button(f"Start session", key=f"pick_{pid}"):
+                if st.button("Start session", key=f"pick_{pid}"):
                     ss_set("session_active", True)
                     ss_set("active_profile", pid)
                     ss_set("messages", [])
@@ -609,33 +604,34 @@ def page_practice():
     st.caption(profile["brief"])
     st.divider()
 
-    # ── Post-session debrief view ──
+    # Debrief view
     if ss("debrief_done"):
-        st.markdown('<div class="debrief-box">' + ss("last_debrief", "") + '</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            '<div class="debrief-box">' + ss("last_debrief", "") + '</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown("")
         if st.button("🔄 Start New Session"):
-            for k in ["session_active", "active_profile", "messages",
-                      "debrief_done", "last_debrief"]:
+            for k in ["session_active","active_profile","messages","debrief_done","last_debrief"]:
                 ss_set(k, None)
             st.rerun()
         return
 
-    # ── Live chat ──
+    # Live chat
     msgs: list = ss("messages", [])
 
-    # Auto-trigger customer opening line
+    # Customer opening line
     if not msgs:
         with st.spinner("Customer entering the store…"):
             try:
                 opening = chat_as_customer(profile, [])
             except Exception as e:
-                st.error(f"Gemini API error: {e}")
+                st.error(f"Groq API error: {e}")
                 st.stop()
         msgs = [{"role": "assistant", "content": opening}]
         ss_set("messages", msgs)
 
-    # Render conversation
+    # Render chat history
     for m in msgs:
         if m["role"] == "user":
             st.markdown(
@@ -658,43 +654,41 @@ def page_practice():
     with col_btn:
         end_clicked = st.button("End & Score", type="primary")
 
-    # Send salesperson message
+    # Send message
     if user_input:
         msgs.append({"role": "user", "content": user_input})
-        with st.spinner("Customer is responding…"):
-            reply = chat_as_customer(profile, msgs)
+        with st.spinner("Customer responding…"):
+            try:
+                reply = chat_as_customer(profile, msgs)
+            except Exception as e:
+                st.error(f"Groq API error: {e}")
+                st.stop()
         msgs.append({"role": "assistant", "content": reply})
         ss_set("messages", msgs)
         st.session_state["chat_input"] = ""
         st.rerun()
 
-    # End session and score
+    # End and score
     if end_clicked:
         if len(msgs) < 3:
             st.warning("Have at least 2 exchanges before ending the session.")
             return
 
-        with st.spinner("Evaluating your session — this takes a few seconds…"):
+        with st.spinner("Scoring your session…"):
             try:
                 scores = score_session(msgs)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parse error from Gemini scoring: {e}")
-                st.error("Scoring returned unexpected output. Please try again.")
-                return
             except Exception as e:
-                logger.error(f"Scoring failed: {e}")
-                st.error(f"Scoring failed: {e}")
+                st.error(f"Scoring error: {e}")
                 return
 
-            perf_pts = int((scores["sale_score"] + scores["service_score"]) * 5)
-            df_prev  = load_sessions(sp_name)
-            prev_sale = df_prev["sale_score"].mean() if not df_prev.empty else 0.0
-            prev_svc  = df_prev["svc_score"].mean()  if not df_prev.empty else 0.0
-            growth_bonus = (scores["sale_score"] > prev_sale) and (prev_sale > 0)
-            total_pts = POINTS_PARTICIPATION + perf_pts + (POINTS_GROWTH if growth_bonus else 0)
+            perf_pts  = int((scores["sale_score"] + scores["service_score"]) * 5)
+            df_prev   = load_sessions(sp_name)
+            prev_sale = float(df_prev["sale_score"].mean()) if not df_prev.empty else 0.0
+            prev_svc  = float(df_prev["svc_score"].mean())  if not df_prev.empty else 0.0
+            growth    = scores["sale_score"] > prev_sale and prev_sale > 0
+            total_pts = POINTS_PARTICIP + perf_pts + (POINTS_GROWTH if growth else 0)
 
-            debrief = build_debrief(scores, sp_name, prev_sale, prev_svc,
-                                    total_pts, growth_bonus)
+            debrief = build_debrief(scores, sp_name, prev_sale, prev_svc, total_pts, growth)
             save_session(sp_name, profile["id"],
                          scores["sale_score"], scores["service_score"],
                          total_pts, msgs, debrief)
@@ -740,8 +734,8 @@ def page_progress():
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Session History")
-    display = df[["created_at", "profile_id", "sale_score", "svc_score", "points"]].copy()
-    display.columns = ["Date", "Profile", "Sale", "Service", "Points"]
+    display = df[["created_at","profile_id","sale_score","svc_score","points"]].copy()
+    display.columns = ["Date","Profile","Sale","Service","Points"]
     display["Profile"] = display["Profile"].map(
         {pid: p["name"] for pid, p in PROFILES.items()}
     )
@@ -760,14 +754,14 @@ def page_dashboard():
         st.info("No session data yet.")
         return
 
-    today = datetime.date.today().isoformat()
+    today    = datetime.date.today().isoformat()
     today_df = all_df[all_df["created_at"].str.startswith(today)]
 
     c1, c2, c3, c4 = st.columns(4)
-    metric_card("Sessions Today",   len(today_df),                         c1)
-    metric_card("Avg Sale Score",   f"{all_df['sale_score'].mean():.1f}",  c2)
-    metric_card("Avg Service Score",f"{all_df['svc_score'].mean():.1f}",   c3)
-    metric_card("Salespeople",      len(sp_df),                            c4)
+    metric_card("Sessions Today",    len(today_df),                          c1)
+    metric_card("Avg Sale Score",    f"{all_df['sale_score'].mean():.1f}",   c2)
+    metric_card("Avg Service Score", f"{all_df['svc_score'].mean():.1f}",    c3)
+    metric_card("Salespeople",       len(sp_df),                             c4)
 
     st.divider()
     col_a, col_b = st.columns(2)
@@ -823,7 +817,7 @@ def page_dashboard():
         st.download_button("Download CSV", csv, "mansam_sessions.csv", "text/csv")
 
 
-# ── Main router ───────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     page = render_sidebar()
     if page == "Practice Session":
