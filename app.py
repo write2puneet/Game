@@ -2,9 +2,10 @@
 Mansam Parfumery — Gamified AI Sales Coaching Agent
 ====================================================
 Streamlit MVP · Phase 1
-LLM  : Groq — Llama 3.3 70B (free · 30 RPM · 1,000 req/day)
-Audio: gTTS  — Google Text-to-Speech (free, no API key)
-Lang : English + Arabic (selectable per session)
+LLM  : Groq — Llama 3.3 70B  (free · 30 RPM · 1,000 req/day)
+STT  : Groq — Whisper large-v3 (free · same API key, auto-detects Arabic/English)
+TTS  : gTTS — Google Text-to-Speech (free, no API key)
+Lang : English + Arabic + Mixed (selectable per session)
 
 Streamlit secrets required:
   GROQ_API_KEY = "gsk_..."
@@ -520,6 +521,38 @@ def audio_player(b64: str) -> str:
     return f'<audio controls autoplay><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>'
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SPEECH-TO-TEXT — Groq Whisper large-v3 (free, same API key)
+# Auto-detects Arabic, English, or mixed within a single recording
+# ─────────────────────────────────────────────────────────────────────────────
+def transcribe_audio(audio_bytes: bytes, lang_code: str) -> str:
+    """
+    Transcribe salesperson audio using Groq Whisper large-v3.
+    - en  → hints Whisper to English
+    - ar  → hints Whisper to Arabic  
+    - mixed → no hint, Whisper auto-detects per utterance
+    Returns transcribed text string.
+    """
+    client = get_client()
+    whisper_lang = {"en": "en", "ar": "ar", "mixed": None}.get(lang_code)
+
+    audio_file = io.BytesIO(audio_bytes)
+    audio_file.name = "salesperson.wav"
+
+    kwargs = dict(
+        file=audio_file,
+        model="whisper-large-v3",
+        response_format="text",
+        temperature=0.0,
+    )
+    if whisper_lang:
+        kwargs["language"] = whisper_lang
+
+    transcription = client.audio.transcriptions.create(**kwargs)
+    result = transcription if isinstance(transcription, str) else transcription.text
+    return result.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PROMPT BUILDERS
 # ─────────────────────────────────────────────────────────────────────────────
 def persona_system(profile: dict, lang_code: str) -> str:
@@ -781,16 +814,21 @@ def render_sidebar():
         )
         st.divider()
 
-        # Audio toggle
+        # Voice playback toggle
         audio_on = st.toggle(
-            "🔊 Voice playback",
+            "🔊 Customer voice playback",
             value=ss("audio_on", True),
-            help="When ON, the customer's replies are read aloud automatically using text-to-speech.",
+            help="Customer replies are read aloud using gTTS. Toggle off for silent mode.",
         )
         ss_set("audio_on", audio_on)
 
         st.divider()
-        st.caption("Phase 1 MVP · EN + AR · 3 profiles\nGroq · Llama 3.3 70B (free)\nTTS by gTTS (free)")
+        st.caption(
+            "Phase 1 MVP · EN + AR · 3 profiles\n"
+            "LLM: Groq Llama 3.3 70B (free)\n"
+            "STT: Groq Whisper large-v3 (free)\n"
+            "TTS: gTTS (free)"
+        )
 
     # strip emoji prefix for routing
     return page.split(" ", 1)[1] if " " in page else page
@@ -923,10 +961,58 @@ def page_practice():
             if audio_b64:
                 st.markdown(audio_player(audio_b64), unsafe_allow_html=True)
 
-    # ── Input form ────────────────────────────────────────────────────────────
-    placeholder = "ماذا تقول للعميل؟" if is_rtl else "What do you say to the customer?"
-    send_label  = "إرسال ➤" if is_rtl else "Send ➤"
-    end_label   = "إنهاء وتقييم" if is_rtl else "End & Score"
+    # ── Input area: voice-first with text fallback ───────────────────────────
+    end_label = "إنهاء وتقييم" if is_rtl else "End & Score"
+
+    mic_label = (
+        "🎙️ اضغط لتسجيل ردّك — Whisper سيحوّل صوتك إلى نص تلقائياً"
+        if is_rtl else
+        "🎙️ Record your response — Whisper transcribes it automatically"
+    )
+    text_label = (
+        "أو اكتب ردّك هنا إذا كنت تفضّل الكتابة"
+        if is_rtl else
+        "Or type your response below if you prefer"
+    )
+    tip(
+        "Speak naturally — Whisper understands Arabic, English, and mixed speech. "
+        "After recording, your words appear in the text box so you can review before sending."
+        if lang_code == "en"
+        else "تكلّم بشكل طبيعي — ويسبر يفهم العربي والإنجليزي والمزيج. ستظهر كلماتك في المربع قبل الإرسال."
+    )
+
+    # ── Mic recorder ─────────────────────────────────────────────────────────
+    st.markdown(f"**{mic_label}**")
+    audio_input = st.audio_input(
+        "Record",
+        key="mic_input",
+        label_visibility="collapsed",
+        help=(
+            "Click the mic icon to start recording. Click again to stop. "
+            "Works in Chrome, Edge, Safari. Supports Arabic and English."
+        ),
+    )
+
+    # Transcribe as soon as a recording arrives (only once per new recording)
+    pending_text = ss("pending_transcription", "")
+    if audio_input is not None:
+        audio_bytes = audio_input.read()
+        # Only re-transcribe if the recording changed
+        if audio_bytes != ss("last_audio_bytes", b""):
+            ss_set("last_audio_bytes", audio_bytes)
+            with st.spinner(
+                "Whisper يحوّل صوتك إلى نص…" if is_rtl else "Whisper is transcribing your voice…"
+            ):
+                try:
+                    transcribed = transcribe_audio(audio_bytes, lang_code)
+                    ss_set("pending_transcription", transcribed)
+                    pending_text = transcribed
+                except Exception as e:
+                    st.warning(f"Transcription failed — please type your response instead. ({e})")
+
+    # ── Text box (pre-filled from transcription, editable) ───────────────────
+    st.markdown(f'<p style="font-size:0.85rem;color:#8C7A5A;margin:6px 0 2px">{text_label}</p>',
+                unsafe_allow_html=True)
 
     if is_rtl:
         st.markdown('<div class="rtl-input">', unsafe_allow_html=True)
@@ -936,26 +1022,33 @@ def page_practice():
         with col_input:
             user_input = st.text_input(
                 "response",
-                placeholder=placeholder,
+                value=pending_text,
+                placeholder="ماذا تقول للعميل؟" if is_rtl else "What do you say to the customer?",
                 label_visibility="collapsed",
             )
         with col_send:
-            send_clicked = st.form_submit_button(send_label, use_container_width=True)
+            send_clicked = st.form_submit_button(
+                "إرسال ➤" if is_rtl else "Send ➤",
+                use_container_width=True,
+            )
         with col_end:
-            end_clicked = st.form_submit_button(end_label, use_container_width=True, type="primary")
+            end_clicked = st.form_submit_button(
+                end_label, use_container_width=True, type="primary"
+            )
 
     if is_rtl:
         st.markdown('</div>', unsafe_allow_html=True)
 
     tip(
-        "Press 'End & Score' after a natural conversation (aim for 3–6 exchanges). "
-        "The AI will score your Sale and Service performance."
+        "Aim for 3–6 exchanges, then press 'End & Score' for your debrief."
         if lang_code == "en"
-        else "اضغط 'إنهاء وتقييم' بعد محادثة طبيعية. سيقيّم الذكاء الاصطناعي أدائك."
+        else "أجرِ 3–6 تبادلات، ثم اضغط 'إنهاء وتقييم' للحصول على تقييمك."
     )
 
-    # Send message
+    # Send message (clears pending transcription)
     if send_clicked and user_input.strip():
+        ss_set("pending_transcription", "")
+        ss_set("last_audio_bytes", b"")
         msgs.append({"role": "user", "content": user_input.strip()})
         with st.spinner("Customer responding…" if lang_code == "en" else "العميل يرد…"):
             try:
@@ -965,7 +1058,6 @@ def page_practice():
                 st.stop()
         msgs.append({"role": "assistant", "content": reply})
         ss_set("messages", msgs)
-        # Pre-generate audio for next render
         if ss("audio_on"):
             b64 = text_to_audio_b64(reply, lang_gtts)
             ss_set("last_audio", b64)
