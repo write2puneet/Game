@@ -871,9 +871,8 @@ def tip(text: str):
 # ─────────────────────────────────────────────────────────────────────────────
 def render_mobile_nav(active_page: str):
     """
-    Sticky top nav bar visible only on mobile (<=768px via CSS).
-    Shows brand name, page buttons, name input, and points badge.
-    Uses Streamlit query_params to signal page changes without a full rerun loop.
+    Sticky top nav bar — visible only on mobile via CSS media query.
+    Uses ?page= query params so tapping a button triggers a clean Streamlit rerun.
     """
     sp   = ss("sp_name", "") or ""
     pts  = ss("total_points", 0)
@@ -884,18 +883,18 @@ def render_mobile_nav(active_page: str):
         ("📈", "My Progress"),
         ("📊", "Manager Dashboard"),
     ]
+
     btn_html = ""
     for emoji, label in pages:
         cls = "nav-btn active" if label == active_page else "nav-btn"
-        # Use JS to set a hidden Streamlit text_input, then trigger rerun
+        # Encode label for URL safety
+        url_label = label.replace(" ", "%20")
         btn_html += (
-            f'<button class="{cls}" ' +
-            f'onclick="document.getElementById(\'mob_page_target\').value=\'{label}\';'
-            f'document.getElementById(\'mob_page_target\').dispatchEvent(new Event(\'input\',{{bubbles:true}}))">'
-            f'{emoji} {label}</button>'
+            f'<a class="{cls}" href="?page={url_label}" style="text-decoration:none">' +
+            f'{emoji} {label}</a>'
         )
 
-    user_display = sp if sp else "Enter name below ↓"
+    user_display = sp if sp else "↓ Enter your name to start"
     pts_html = f'<span class="pts-badge">⭐ {pts} pts · T{tier}</span>' if sp else ""
 
     st.markdown(f"""
@@ -1024,10 +1023,6 @@ def page_practice():
 
         tip("💡 On desktop, you can also enter your name in the left sidebar.")
         return
-
-    # Name is set — sync to sidebar input value too
-    if not ss("sp_input"):
-        ss_set("sp_input", sp_name)
 
     # ── Profile picker ────────────────────────────────────────────────────────
     if not ss("session_active"):
