@@ -894,17 +894,15 @@ def render_mobile_nav(active_page: str):
             f'{emoji} {label}</a>'
         )
 
-    user_display = sp if sp else "↓ Enter your name to start"
     pts_html = f'<span class="pts-badge">⭐ {pts} pts · T{tier}</span>' if sp else ""
+    sp_html  = f'<span style="color:#E8D5A3;font-size:0.8rem">👤 {sp}</span>' if sp else ""
+    user_row = f'<div class="user-row">{sp_html}{pts_html}</div>' if sp else ""
 
     st.markdown(f"""
     <div id="mobile-nav">
         <span class="brand">🕌 MANSAM</span>
         <div class="nav-buttons">{btn_html}</div>
-        <div class="user-row">
-            <span style="color:#E8D5A3;font-size:0.8rem;white-space:nowrap">👤 {user_display}</span>
-            {pts_html}
-        </div>
+        {user_row}
     </div>
     """, unsafe_allow_html=True)
 
@@ -1012,9 +1010,9 @@ def page_practice():
                 help="Used to track your points and session history.",
             )
         with col_go:
-            st.markdown("<div style='padding-top:1.75rem'>", unsafe_allow_html=True)
+            # spacer via empty lines — no raw HTML div needed
+            st.markdown("&nbsp;", unsafe_allow_html=True)
             go_clicked = st.button("Let's go →", use_container_width=True)
-            st.markdown("</div>", unsafe_allow_html=True)
 
         if go_clicked and mobile_name.strip():
             ss_set("sp_name", mobile_name.strip())
