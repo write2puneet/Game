@@ -35,7 +35,7 @@ st.set_page_config(
     page_title="Mansam | Sales Coach",
     page_icon="🕌",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,6 +290,94 @@ div[data-testid="stToolbar"] { display: none; }
 .rtl-input input {
     direction: rtl !important;
     text-align: right !important;
+}
+
+/* ═══════════════════════════════════════════════
+   MOBILE STICKY TOP NAV BAR
+   ═══════════════════════════════════════════════ */
+#mobile-nav {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    #mobile-nav {
+        display: flex !important;
+        position: sticky;
+        top: 0;
+        z-index: 9999;
+        background: #2E2415;
+        width: 100%;
+        padding: 10px 14px 8px;
+        align-items: center;
+        justify-content: space-between;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        box-sizing: border-box;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    #mobile-nav .brand {
+        font-weight: 600;
+        font-size: 1rem;
+        color: #C9A84C;
+        letter-spacing: 0.06em;
+    }
+    #mobile-nav .nav-buttons {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+    }
+    #mobile-nav .nav-btn {
+        background: transparent;
+        border: 1.5px solid #C9A84C;
+        color: #E8D5A3;
+        border-radius: 20px;
+        padding: 5px 11px;
+        font-size: 0.7rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.15s;
+        white-space: nowrap;
+    }
+    #mobile-nav .nav-btn.active,
+    #mobile-nav .nav-btn:hover {
+        background: #C9A84C;
+        color: #1A1208;
+    }
+    #mobile-nav .user-row {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-top: 6px;
+        border-top: 1px solid #3D3020;
+        margin-top: 4px;
+    }
+    #mobile-nav .pts-badge {
+        background: #C9A84C;
+        color: #1A1208;
+        border-radius: 20px;
+        padding: 4px 10px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    /* Push content below sticky nav — target main block */
+    .main .block-container {
+        padding-top: 1rem !important;
+    }
+    /* Hide sidebar arrow on mobile */
+    button[data-testid="collapsedControl"] {
+        display: none !important;
+    }
+    /* iOS font-size prevents auto-zoom on focus */
+    input, textarea, select {
+        font-size: 16px !important;
+    }
+    /* Touch-friendly buttons */
+    .stButton > button,
+    .stFormSubmitButton > button {
+        min-height: 44px !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -779,9 +867,54 @@ def tip(text: str):
     st.markdown(f'<p class="tip">💡 {text}</p>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR
+# MOBILE NAV HTML — injected at top of every page
+# ─────────────────────────────────────────────────────────────────────────────
+def render_mobile_nav(active_page: str):
+    """
+    Sticky top nav bar visible only on mobile (<=768px via CSS).
+    Shows brand name, page buttons, name input, and points badge.
+    Uses Streamlit query_params to signal page changes without a full rerun loop.
+    """
+    sp   = ss("sp_name", "") or ""
+    pts  = ss("total_points", 0)
+    tier = ss("tier", 1)
+
+    pages = [
+        ("🎭", "Practice Session"),
+        ("📈", "My Progress"),
+        ("📊", "Manager Dashboard"),
+    ]
+    btn_html = ""
+    for emoji, label in pages:
+        cls = "nav-btn active" if label == active_page else "nav-btn"
+        # Use JS to set a hidden Streamlit text_input, then trigger rerun
+        btn_html += (
+            f'<button class="{cls}" ' +
+            f'onclick="document.getElementById(\'mob_page_target\').value=\'{label}\';'
+            f'document.getElementById(\'mob_page_target\').dispatchEvent(new Event(\'input\',{{bubbles:true}}))">'
+            f'{emoji} {label}</button>'
+        )
+
+    user_display = sp if sp else "Enter name below ↓"
+    pts_html = f'<span class="pts-badge">⭐ {pts} pts · T{tier}</span>' if sp else ""
+
+    st.markdown(f"""
+    <div id="mobile-nav">
+        <span class="brand">🕌 MANSAM</span>
+        <div class="nav-buttons">{btn_html}</div>
+        <div class="user-row">
+            <span style="color:#E8D5A3;font-size:0.8rem;white-space:nowrap">👤 {user_display}</span>
+            {pts_html}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIDEBAR  (desktop) + page routing
 # ─────────────────────────────────────────────────────────────────────────────
 def render_sidebar():
+    # ── Desktop sidebar ───────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("## 🕌 Mansam\n### Sales Coach")
         st.divider()
@@ -830,8 +963,26 @@ def render_sidebar():
             "TTS: gTTS (free)"
         )
 
-    # strip emoji prefix for routing
-    return page.split(" ", 1)[1] if " " in page else page
+    # Strip emoji prefix for routing
+    page_clean = page.split(" ", 1)[1] if " " in page else page
+
+    # ── Mobile page routing via query params ──────────────────────────────────
+    # If a mobile nav button was pressed it sets ?page=... in the URL
+    qp = st.query_params
+    if "page" in qp:
+        requested = qp["page"]
+        valid = ["Practice Session", "My Progress", "Manager Dashboard"]
+        if requested in valid:
+            ss_set("mobile_page", requested)
+            # Clear it so back-button works
+            st.query_params.clear()
+            st.rerun()
+
+    # Mobile page overrides sidebar selection
+    mobile_page = ss("mobile_page")
+    active_page = mobile_page if mobile_page else page_clean
+
+    return active_page
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: PRACTICE SESSION
@@ -839,10 +990,44 @@ def render_sidebar():
 def page_practice():
     st.markdown("# 🎭 Practice Session")
     sp_name = ss("sp_name", "")
+
+    # ── Mobile name entry (visible when no name set) ──────────────────────────
     if not sp_name:
-        st.info("👈 Enter your name in the sidebar to begin.")
-        tip("Your name is used to save your scores and track progress over time.")
+        st.markdown("""
+        <div style="background:#2E2415;border-radius:10px;padding:1.4rem 1.6rem;margin-bottom:1rem">
+            <div style="color:#C9A84C;font-size:1.1rem;font-weight:700;margin-bottom:0.3rem">
+                🕌 Welcome to Mansam Sales Coach
+            </div>
+            <div style="color:#E8D5A3;font-size:0.88rem;line-height:1.5">
+                Practice selling to AI customers · Earn points · Get coached
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_name, col_go = st.columns([3, 1])
+        with col_name:
+            mobile_name = st.text_input(
+                "Enter your name to start",
+                placeholder="Your name…",
+                key="mobile_name_input",
+                help="Used to track your points and session history.",
+            )
+        with col_go:
+            st.markdown("<div style='padding-top:1.75rem'>", unsafe_allow_html=True)
+            go_clicked = st.button("Let's go →", use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        if go_clicked and mobile_name.strip():
+            ss_set("sp_name", mobile_name.strip())
+            upsert_salesperson(mobile_name.strip().lower().replace(" ", "_"), mobile_name.strip())
+            st.rerun()
+
+        tip("💡 On desktop, you can also enter your name in the left sidebar.")
         return
+
+    # Name is set — sync to sidebar input value too
+    if not ss("sp_input"):
+        ss_set("sp_input", sp_name)
 
     # ── Profile picker ────────────────────────────────────────────────────────
     if not ss("session_active"):
@@ -1254,17 +1439,25 @@ def page_dashboard():
         csv = all_df.to_csv(index=False)
         st.download_button("Download CSV", csv, "mansam_sessions.csv", "text/csv")
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    page = render_sidebar()
-    if "Practice" in page:
+    # Sidebar handles desktop nav + returns active page
+    active_page = render_sidebar()
+
+    # Mobile sticky nav — CSS hides it on desktop automatically
+    render_mobile_nav(active_page)
+
+    # Route
+    if 'Practice' in active_page:
         page_practice()
-    elif "Progress" in page:
+    elif 'Progress' in active_page:
         page_progress()
-    elif "Dashboard" in page:
+    elif 'Dashboard' in active_page:
         page_dashboard()
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()
