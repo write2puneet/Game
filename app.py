@@ -603,282 +603,233 @@ def screen_instructions():
 # - Sends audio b64 to Streamlit → STT → LLM → TTS → plays → next turn
 # - No transcript clutter — just the current exchange
 
-SESSION_COMPONENT = """
+SESSION_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    background: #F5F5F5;
-    font-family: -apple-system, 'Inter', BlinkMacSystemFont, sans-serif;
-    display: flex; flex-direction: column;
-    min-height: HEIGHTPX;
-    padding: 0 0 1rem;
-    overflow: hidden;
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#F5F5F5;
+  font-family:-apple-system,'Inter',BlinkMacSystemFont,sans-serif;
+  display:flex;flex-direction:column;
+  height:HEIGHTPX;overflow:hidden;
 }
-
-/* thin progress bar */
-#prog-bar {
-    height: 3px; width: 100%;
-    background: #E5E5E5; flex-shrink: 0;
-}
-#prog-fill {
-    height: 3px; background: #C9A84C;
-    transition: width .5s linear, background .3s;
-    width: 100%;
-}
-
-/* single message area — takes all space */
-#msg-area {
-    flex: 1;
-    display: flex; flex-direction: column;
-    justify-content: center;
-    padding: 1.5rem 1.2rem 1rem;
-}
-#bubble {
-    background: #fff;
-    border-radius: 20px;
-    padding: 1.5rem 1.4rem;
-    font-size: 1.05rem;
-    line-height: 1.65;
-    color: #1A1A1A;
-    box-shadow: 0 1px 8px rgba(0,0,0,.08);
-    border-left: 3px solid #C9A84C;
-    min-height: 80px;
-    transition: opacity .2s;
-}
-#speaker-lbl {
-    font-size: .7rem; font-weight: 600;
-    color: #B0B0B0; text-transform: uppercase;
-    letter-spacing: .09em; margin-bottom: .5rem;
-}
-#status-txt {
-    text-align: center;
-    font-size: .78rem; color: #B0B0B0;
-    letter-spacing: .05em; text-transform: uppercase;
-    margin-top: .8rem; min-height: 1rem;
-}
-
-/* audio player (hidden, autoplay only) */
-#reply-audio { display: none; }
-
-/* bottom mic area */
-#mic-area {
-    flex-shrink: 0;
-    display: flex; flex-direction: column;
-    align-items: center;
-    padding: .5rem 0 .5rem;
-}
-#mic-btn {
-    width: 72px; height: 72px; border-radius: 50%;
-    background: #E8521A; border: none; outline: none;
-    cursor: pointer;
-    box-shadow: 0 4px 18px rgba(232,82,26,.4);
-    transition: transform .1s, box-shadow .1s, background .15s;
-    display: flex; align-items: center; justify-content: center;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-}
-#mic-btn:active { transform: scale(.94); }
-#mic-btn.rec {
-    background: #B02A08;
-    box-shadow: 0 4px 28px rgba(176,42,8,.7);
-    animation: rpulse 1s infinite;
-}
-#mic-btn.disabled {
-    background: #D0D0D0;
-    box-shadow: none; cursor: not-allowed;
-}
-@keyframes rpulse {
-    0%,100% { box-shadow: 0 4px 18px rgba(176,42,8,.5); }
-    50%      { box-shadow: 0 4px 36px rgba(176,42,8,.9); }
-}
-#mic-hint {
-    font-size: .75rem; color: #C0C0C0;
-    margin-top: .55rem; letter-spacing: .02em;
-}
+#prog-bar{height:3px;background:#E5E5E5;flex-shrink:0}
+#prog-fill{height:3px;background:#C9A84C;width:100%;transition:width .5s linear,background .3s}
+#msg-area{flex:1;display:flex;flex-direction:column;justify-content:center;padding:1.5rem 1.2rem 1rem}
+#speaker-lbl{font-size:.7rem;font-weight:600;color:#B0B0B0;text-transform:uppercase;letter-spacing:.09em;margin-bottom:.5rem}
+#bubble{background:#fff;border-radius:20px;padding:1.5rem 1.4rem;font-size:1.05rem;line-height:1.65;color:#1A1A1A;box-shadow:0 1px 8px rgba(0,0,0,.08);border-left:3px solid #C9A84C;min-height:80px;transition:opacity .2s}
+#status-txt{text-align:center;font-size:.78rem;color:#B0B0B0;letter-spacing:.05em;text-transform:uppercase;margin-top:.8rem;min-height:1rem}
+#reply-audio{display:none}
+#mic-area{flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding:.5rem 0 .8rem}
+#mic-btn{width:72px;height:72px;border-radius:50%;background:#E8521A;border:none;outline:none;cursor:pointer;box-shadow:0 4px 18px rgba(232,82,26,.4);transition:transform .1s,background .15s;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+#mic-btn:active{transform:scale(.94)}
+#mic-btn.rec{background:#B02A08;box-shadow:0 4px 28px rgba(176,42,8,.7);animation:rpulse 1s infinite}
+#mic-btn.disabled{background:#D0D0D0;box-shadow:none;cursor:not-allowed}
+@keyframes rpulse{0%,100%{box-shadow:0 4px 18px rgba(176,42,8,.5)}50%{box-shadow:0 4px 36px rgba(176,42,8,.9)}}
+#mic-hint{font-size:.75rem;color:#C0C0C0;margin-top:.55rem;letter-spacing:.02em}
+#perm-err{display:none;font-size:.8rem;color:#E07000;text-align:center;padding:.5rem 1rem}
 </style>
 </head>
 <body>
-
 <div id="prog-bar"><div id="prog-fill"></div></div>
-
 <div id="msg-area">
-    <div id="speaker-lbl">Customer</div>
-    <div id="bubble">…</div>
-    <div id="status-txt">Starting…</div>
+  <div id="speaker-lbl">Customer</div>
+  <div id="bubble">Starting session…</div>
+  <div id="status-txt"></div>
 </div>
-
 <audio id="reply-audio"></audio>
-
 <div id="mic-area">
-    <button id="mic-btn" class="disabled" title="Record your response">
-        <!-- mic icon -->
-        <svg width="30" height="30" viewBox="0 0 24 24" fill="none"
-             stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="2" width="6" height="12" rx="3"/>
-          <path d="M5 10a7 7 0 0 0 14 0"/>
-          <line x1="12" y1="19" x2="12" y2="22"/>
-          <line x1="8"  y1="22" x2="16" y2="22"/>
-        </svg>
-    </button>
-    <div id="mic-hint">Tap to speak</div>
+  <button id="mic-btn" class="disabled">
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3"/>
+      <path d="M5 10a7 7 0 0 0 14 0"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="8"  y1="22" x2="16" y2="22"/>
+    </svg>
+  </button>
+  <div id="mic-hint">Loading…</div>
+  <div id="perm-err">Microphone access denied.<br>Please allow mic in your browser settings.</div>
 </div>
 
 <script>
 (function(){
 "use strict";
+var TOTAL = TOTAL_SECS_PH;
+var LANG  = "LANG_CODE_PH";
+var KEY   = "STORAGE_KEY_PH";   // unique per session to avoid stale reads
+var t0    = Date.now();
 
-const TOTAL   = TOTAL_SECS;
-const LANG    = "LANG_CODE";
-const t0      = Date.now();
+var progFill = document.getElementById('prog-fill');
+var bubble   = document.getElementById('bubble');
+var spkLbl   = document.getElementById('speaker-lbl');
+var statusTxt= document.getElementById('status-txt');
+var micBtn   = document.getElementById('mic-btn');
+var micHint  = document.getElementById('mic-hint');
+var audio    = document.getElementById('reply-audio');
+var permErr  = document.getElementById('perm-err');
 
-// DOM
-const progFill  = document.getElementById('prog-fill');
-const bubble    = document.getElementById('bubble');
-const spkLbl    = document.getElementById('speaker-lbl');
-const statusTxt = document.getElementById('status-txt');
-const micBtn    = document.getElementById('mic-btn');
-const micHint   = document.getElementById('mic-hint');
-const audio     = document.getElementById('reply-audio');
+var isRec     = false;
+var busy      = false;
+var sessionEnd= false;
+var stream, mediaRecorder;
+var chunks    = [];
 
-let mediaRecorder, stream;
-let chunks     = [];
-let isRec      = false;
-let sessionEnd = false;
-let busy       = false;   // waiting for Streamlit response
-
-// ── timer ────────────────────────────────────────────────────────────────────
-function tickTimer(){
-    const elapsed = (Date.now() - t0) / 1000;
-    const rem     = Math.max(0, TOTAL - elapsed);
-    const pct     = rem / TOTAL * 100;
-    progFill.style.width  = pct + '%';
-    progFill.style.background = rem < 60 ? '#E07000' : '#C9A84C';
-    if(rem <= 0 && !sessionEnd){ endSession(); return; }
-    setTimeout(tickTimer, 500);
+// ── timer ──────────────────────────────────────────────────────────────────
+function tick(){
+  var rem = Math.max(0, TOTAL - (Date.now()-t0)/1000);
+  progFill.style.width     = (rem/TOTAL*100)+'%';
+  progFill.style.background= rem<60?'#E07000':'#C9A84C';
+  if(rem<=0 && !sessionEnd){ doEndSession(); return; }
+  setTimeout(tick, 500);
 }
-tickTimer();
+tick();
 
-// ── status helpers ───────────────────────────────────────────────────────────
-function setStatus(txt){ statusTxt.textContent = txt; }
-function setBubble(txt, speaker){
-    bubble.style.opacity = '0';
-    setTimeout(()=>{
-        bubble.textContent = txt;
-        spkLbl.textContent = speaker || 'Customer';
-        bubble.style.opacity = '1';
-    }, 150);
+// ── UI helpers ─────────────────────────────────────────────────────────────
+function showBubble(txt, spk){
+  bubble.style.opacity='0';
+  setTimeout(function(){
+    bubble.textContent = txt;
+    spkLbl.textContent = spk||'Customer';
+    bubble.style.opacity='1';
+  },150);
 }
+function setStatus(t){ statusTxt.textContent=t; }
 function enableMic(hint){
-    micBtn.className   = '';
-    micHint.textContent = hint || 'Tap to speak';
+  micBtn.className='';
+  micHint.textContent=hint||'Tap to speak';
 }
 function disableMic(){
-    micBtn.className   = 'disabled';
-    micHint.textContent = '';
+  micBtn.className='disabled';
+  micHint.textContent='';
 }
 
-// ── send audio to Streamlit ──────────────────────────────────────────────────
-async function sendAudio(blob){
+// ── send event to Python via localStorage + URL hash ──────────────────────
+// Python polls st.query_params on each rerun; JS signals by changing hash.
+// Large audio goes in localStorage; text events go directly in hash.
+function signalPython(eventName, extra){
+  // Store payload in localStorage
+  var payload = {event: eventName};
+  if(extra) Object.assign(payload, extra);
+  localStorage.setItem(KEY+'_payload', JSON.stringify(payload));
+  // Trigger Streamlit rerun by changing a query param via parent navigation
+  // We use a hidden iframe trick: post a message that Streamlit's component
+  // system CAN read — we'll use st.query_params polling from Python instead.
+  // Since components.html can't return values, we use the Streamlit
+  // "component value" approach via a minimal bidirectional channel.
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: 'streamlit:componentReady',
+    apiVersion: 1
+  }, '*');
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: 'streamlit:setComponentValue',
+    value: payload
+  }, '*');
+}
+
+// ── receive reply from Python ──────────────────────────────────────────────
+// Python stores reply in localStorage[KEY_reply] and sets a flag
+function pollReply(){
+  if(sessionEnd) return;
+  var raw = localStorage.getItem(KEY+'_reply');
+  if(raw){
+    localStorage.removeItem(KEY+'_reply');
+    try{
+      var d = JSON.parse(raw);
+      handleReply(d);
+    }catch(e){}
+  } else {
+    setTimeout(pollReply, 300);
+  }
+}
+
+function handleReply(d){
+  if(d.event==='customer_audio'){
+    showBubble(d.text || '…', LANG==='ar'||LANG==='mixed'?'العميل':'Customer');
+    if(d.b64){
+      audio.src='data:audio/mp3;base64,'+d.b64;
+      setStatus('Customer speaking…');
+      audio.onended=function(){
+        if(!sessionEnd){
+          busy=false;
+          enableMic('Tap to respond');
+          setStatus('Your turn — tap the mic');
+        }
+      };
+      audio.play().catch(function(){
+        busy=false; enableMic('Tap to respond'); setStatus('Your turn — tap the mic');
+      });
+    } else {
+      busy=false; enableMic('Tap to respond'); setStatus('Your turn — tap the mic');
+    }
+  }
+  if(d.event==='session_end_ack'){
+    setStatus('Done! Loading your results…');
+  }
+}
+
+// ── mic button ─────────────────────────────────────────────────────────────
+micBtn.addEventListener('click', async function(){
+  if(micBtn.classList.contains('disabled')||busy||sessionEnd) return;
+
+  if(!stream){
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}
+      });
+    }catch(e){
+      permErr.style.display='block';
+      setStatus(''); disableMic(); return;
+    }
+    var mime=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':'audio/webm';
+    mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
+    mediaRecorder.ondataavailable=function(e){ if(e.data.size>0) chunks.push(e.data); };
+    mediaRecorder.onstop=function(){
+      var blob=new Blob(chunks,{type:mediaRecorder.mimeType});
+      chunks=[];
+      sendAudio(blob);
+    };
+  }
+
+  if(!isRec){
+    isRec=true; chunks=[];
+    mediaRecorder.start(100);
+    micBtn.className='rec';
+    micHint.textContent='Tap again to send';
+    setStatus('Recording…');
+  } else {
+    isRec=false;
+    mediaRecorder.stop();
     disableMic();
     setStatus('Processing…');
-    busy = true;
-    const ab  = await blob.arrayBuffer();
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
-    postToStreamlit({ event:'audio', b64: b64 });
-}
-
-function endSession(){
-    sessionEnd = true;
-    disableMic();
-    setStatus('Session complete — calculating results…');
-    postToStreamlit({ event:'end_session' });
-}
-
-function postToStreamlit(data){
-    window.parent.postMessage({
-        type: 'streamlit:setComponentValue',
-        value: JSON.stringify(data)
-    }, '*');
-}
-
-// ── receive from Streamlit ───────────────────────────────────────────────────
-window.addEventListener('message', function(e){
-    const d = e.data;
-    if(!d || d.type !== 'mansam_reply') return;
-
-    if(d.event === 'customer_audio'){
-        setBubble(d.text, LANG === 'ar' || LANG === 'mixed' ? 'العميل' : 'Customer');
-        audio.src = 'data:audio/mp3;base64,' + d.b64;
-        setStatus('Customer speaking…');
-        audio.onended = ()=>{
-            if(!sessionEnd){
-                busy = false;
-                enableMic('Tap to respond');
-                setStatus('Your turn — tap the mic');
-            }
-        };
-        audio.play().catch(()=>{
-            busy = false;
-            enableMic('Tap to respond');
-            setStatus('Your turn — tap the mic');
-        });
-    }
-
-    if(d.event === 'session_end_ack'){
-        setStatus('Done! Loading your results…');
-    }
+  }
 });
 
-// ── mic: tap-to-start / tap-to-stop ─────────────────────────────────────────
-micBtn.addEventListener('click', async ()=>{
-    if(micBtn.classList.contains('disabled') || busy) return;
-    if(sessionEnd) return;
+// ── send audio clip ────────────────────────────────────────────────────────
+async function sendAudio(blob){
+  busy=true;
+  var ab  = await blob.arrayBuffer();
+  var b64 = btoa(String.fromCharCode.apply(null, new Uint8Array(ab)));
+  signalPython('audio', {b64: b64});
+  // Start polling for reply
+  setTimeout(pollReply, 500);
+}
 
-    if(!stream){
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }
-            });
-        } catch(err){
-            setStatus('Microphone access denied — please allow in browser settings');
-            return;
-        }
-        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                   ? 'audio/webm;codecs=opus' : 'audio/webm';
-        mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
-        mediaRecorder.ondataavailable = e=>{ if(e.data.size>0) chunks.push(e.data); };
-        mediaRecorder.onstop = ()=>{
-            const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
-            chunks = [];
-            sendAudio(blob);
-        };
-    }
+function doEndSession(){
+  sessionEnd=true; disableMic();
+  setStatus('Time up! Loading results…');
+  signalPython('end_session', {});
+}
 
-    if(!isRec){
-        // start recording
-        isRec = true;
-        chunks = [];
-        mediaRecorder.start(100);
-        micBtn.className = 'rec';
-        micHint.textContent = 'Tap again to send';
-        setStatus('Recording…');
-    } else {
-        // stop recording
-        isRec = false;
-        mediaRecorder.stop();
-        micBtn.className = 'disabled';
-        micHint.textContent = '';
-    }
-});
-
-// ── signal ready on load ─────────────────────────────────────────────────────
-setTimeout(()=>{
-    postToStreamlit({ event: 'ready' });
-}, 600);
+// ── init: signal ready + start polling ────────────────────────────────────
+setTimeout(function(){
+  signalPython('ready', {});
+  setTimeout(pollReply, 800);
+}, 400);
 
 })();
 </script>
@@ -892,72 +843,93 @@ def render_session():
     lang = ss("session_lang", "en")
     msgs = ss("messages", [])
 
-    html = SESSION_COMPONENT \
-        .replace("TOTAL_SECS", str(SESSION_SECS)) \
-        .replace("LANG_CODE", lang) \
+    # Unique key per session so localStorage doesn't carry over stale data
+    session_key = ss("session_key", "mansam_" + str(int(time.time())))
+    sset("session_key", session_key)
+
+    html = SESSION_HTML \
+        .replace("TOTAL_SECS_PH", str(SESSION_SECS)) \
+        .replace("LANG_CODE_PH", lang) \
+        .replace("LANG_CODE_PH", lang) \
+        .replace("STORAGE_KEY_PH", session_key) \
         .replace("HEIGHTPX", "460px")
 
+    # Render component — returns value when JS calls setComponentValue
     result = components.html(html, height=460, scrolling=False)
 
-    if not result:
-        return
+    # Safely extract event data from component return value
+    data = None
+    if result is not None:
+        if isinstance(result, dict):
+            data = result
+        elif isinstance(result, str):
+            try:
+                data = json.loads(result)
+            except Exception:
+                data = None
 
-    try:
-        data = json.loads(result) if isinstance(result, str) else result
-    except Exception:
+    if not data or not isinstance(data, dict):
         return
 
     ev = data.get("event")
+    if not ev:
+        return
 
     if ev == "ready":
-        # Generate and send opening customer line
         opening = customer_reply(p, [], lang)
         msgs.append({"role": "assistant", "content": opening})
         sset("messages", msgs)
         b64 = tts_b64(opening, lang)
-        _send_to_component({"event": "customer_audio", "b64": b64 or "", "text": opening})
+        _reply_to_component(session_key, {"event": "customer_audio",
+                                          "b64": b64 or "", "text": opening})
 
     elif ev == "audio":
         b64_in = data.get("b64", "")
         if not b64_in:
             return
-        # STT
         try:
             spoken = stt(b64_in, lang)
         except Exception as e:
             logger.error(f"STT: {e}")
+            _reply_to_component(session_key, {"event": "customer_audio", "b64": "",
+                                              "text": "Sorry, I didn't catch that."})
             return
         if not spoken.strip():
             return
         msgs.append({"role": "user", "content": spoken})
-        # LLM
         reply = customer_reply(p, msgs, lang)
         msgs.append({"role": "assistant", "content": reply})
         sset("messages", msgs)
         b64_out = tts_b64(reply, lang)
-        _send_to_component({"event": "customer_audio", "b64": b64_out or "", "text": reply})
+        _reply_to_component(session_key, {"event": "customer_audio",
+                                          "b64": b64_out or "", "text": reply})
 
     elif ev == "end_session":
-        _send_to_component({"event": "session_end_ack"})
+        _reply_to_component(session_key, {"event": "session_end_ack"})
         sset("screen", "scoring")
         st.rerun()
 
 
-def _send_to_component(payload: dict):
-    """Inject a postMessage into the iframe via a script tag."""
-    b64   = payload.get("b64", "").replace("'", "\\'")
-    text  = payload.get("text", "").replace("'", "\\'").replace("\n", " ")
-    event = payload.get("event", "")
+def _reply_to_component(session_key: str, payload: dict):
+    """
+    Store the reply in localStorage via an injected script tag.
+    The JS component polls localStorage[session_key + '_reply'] every 300ms.
+    """
+    payload_json = json.dumps(payload) \
+        .replace("\\", "\\\\") \
+        .replace("`", "\\`") \
+        .replace("</", "<\\/")
     st.markdown(f"""<script>
     (function(){{
-        var send = function(){{
-            document.querySelectorAll('iframe').forEach(function(f){{
-                f.contentWindow.postMessage(
-                    {{type:'mansam_reply', event:'{event}',
-                      b64:'{b64}', text:'{text}'}}, '*');
-            }});
-        }};
-        setTimeout(send, 120);
+        var key = "{session_key}_reply";
+        var val = `{payload_json}`;
+        // Write to every iframe's localStorage we can reach
+        try {{ localStorage.setItem(key, val); }} catch(e) {{}}
+        document.querySelectorAll('iframe').forEach(function(f){{
+            try {{
+                f.contentWindow.localStorage.setItem(key, val);
+            }} catch(e) {{}}
+        }});
     }})();
     </script>""", unsafe_allow_html=True)
 
