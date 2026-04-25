@@ -672,36 +672,41 @@ div[data-testid="stHeader"] { display:none !important; }
 /* remove top padding so bar sits flush */
 .block-container { padding-top: 0 !important; padding-bottom: 120px !important; }
 
-/* floating mic button fixed bottom-right like Claude */
-.fab-mic {
-    position: fixed;
-    bottom: 28px;
-    right: 22px;
-    width: 64px;
-    height: 64px;
-    border-radius: 50%;
-    background: #E8521A;
-    border: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 4px 20px rgba(232,82,26,.45);
-    z-index: 9999;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-    transition: background .15s, transform .1s;
+/* Style the native Streamlit mic button to look like Claude FAB */
+div[data-testid="stAudioInput"] {
+    position: fixed !important;
+    bottom: 28px !important;
+    right: 22px !important;
+    z-index: 9999 !important;
+    width: 72px !important;
+    height: 72px !important;
 }
-.fab-mic:active { transform: scale(.93); }
-.fab-mic.rec    { background: #B02A08; animation: rpulse 1s infinite; }
-@keyframes rpulse {
-    0%,100% { box-shadow: 0 4px 18px rgba(176,42,8,.5); }
-    50%      { box-shadow: 0 6px 36px rgba(176,42,8,.9); }
+div[data-testid="stAudioInput"] > div {
+    width: 72px !important;
+    height: 72px !important;
+    border-radius: 50% !important;
+    background: #E8521A !important;
+    box-shadow: 0 4px 20px rgba(232,82,26,.45) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border: none !important;
 }
-
-/* hide the native Streamlit audio_input widget visually */
-div[data-testid="stAudioInput"] { opacity: 0; position: absolute;
-    pointer-events: none; height: 0; overflow: hidden; }
+/* hide label text, keep only icon */
+div[data-testid="stAudioInput"] label,
+div[data-testid="stAudioInput"] p,
+div[data-testid="stAudioInput"] small { display: none !important; }
+div[data-testid="stAudioInput"] button {
+    width: 72px !important; height: 72px !important;
+    border-radius: 50% !important;
+    background: #E8521A !important;
+    border: none !important;
+    box-shadow: 0 4px 20px rgba(232,82,26,.45) !important;
+}
+div[data-testid="stAudioInput"] button svg {
+    width: 28px !important; height: 28px !important;
+    color: #fff !important; stroke: #fff !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -724,21 +729,27 @@ div[data-testid="stAudioInput"] { opacity: 0; position: absolute;
     dir_style = "direction:rtl;text-align:right" if is_rtl else ""
     border    = "border-right:3px solid #C9A84C;border-left:none" if is_rtl else "border-left:3px solid #C9A84C"
 
-    st.markdown(f"""
-<div style="padding:1.2rem 1rem 0">
-  <p style="font-size:.68rem;font-weight:600;color:#B0B0B0;
-             text-transform:uppercase;letter-spacing:.1em;margin:0 0 .55rem">
-    {cust_lbl}
-  </p>
-  <div style="background:#fff;border-radius:20px;padding:1.4rem 1.5rem;
-              font-size:1.05rem;line-height:1.7;color:#1A1A1A;
-              box-shadow:0 1px 10px rgba(0,0,0,.08);
-              {border};
-              {dir_style};
-              word-wrap:break-word;overflow-wrap:break-word">
-    {last_customer}
-  </div>
-</div>""", unsafe_allow_html=True)
+    # Build style strings safely without injecting into f-string style attrs
+    bubble_extra = "direction:rtl;text-align:right;" if is_rtl else ""
+    bubble_border = (
+        "border-right:3px solid #C9A84C;border-left:none;"
+        if is_rtl else
+        "border-left:3px solid #C9A84C;"
+    )
+    bubble_html = (
+        '<div style="padding:1.2rem 1rem 0">'
+        f'<p style="font-size:.68rem;font-weight:600;color:#B0B0B0;'
+        f'text-transform:uppercase;letter-spacing:.1em;margin:0 0 .55rem">'
+        f'{cust_lbl}</p>'
+        f'<div style="background:#fff;border-radius:20px;padding:1.4rem 1.5rem;'
+        f'font-size:1.05rem;line-height:1.7;color:#1A1A1A;'
+        f'box-shadow:0 1px 10px rgba(0,0,0,.08);'
+        f'{bubble_border}{bubble_extra}'
+        f'word-wrap:break-word;overflow-wrap:break-word">'
+        f'{last_customer}'
+        f'</div></div>'
+    )
+    st.markdown(bubble_html, unsafe_allow_html=True)
 
     # ── autoplay audio ────────────────────────────────────────────────────────
     if ss("pending_audio"):
@@ -760,14 +771,9 @@ div[data-testid="stAudioInput"] { opacity: 0; position: absolute;
             font-size:.76rem;color:#C0C0C0;letter-spacing:.04em;
             text-transform:uppercase">{hint}</div>""", unsafe_allow_html=True)
 
-    # ── end-early button — subtle, not competing with mic ────────────────────
-    st.markdown("""
-<div style="position:fixed;bottom:28px;left:22px;z-index:9998">""",
-        unsafe_allow_html=True)
-    end_early = st.button("Done ✓", key="end_early_btn",
-                          help="End session and get your feedback")
-    st.markdown("</div>", unsafe_allow_html=True)
-
+    # ── end-early button ──────────────────────────────────────────────────────
+    end_early = st.button("✓ Done — get my feedback", key="end_early_btn",
+                          use_container_width=True)
     if end_early:
         if len(msgs) >= 3:
             sset("screen", "scoring"); st.rerun()
@@ -884,18 +890,14 @@ def screen_debrief():
     # ── strong points as chips ────────────────────────────────────────────────
     strongs = scores.get("strong_points", [])
     if strongs:
-        st.markdown("<p style='font-size:.78rem;font-weight:600;color:#B0B0B0;"
-                    "text-transform:uppercase;letter-spacing:.08em;margin-bottom:.3rem'>"
-                    "What you did well</p>", unsafe_allow_html=True)
+        st.markdown('<p style="font-size:.78rem;font-weight:600;color:#B0B0B0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.3rem">What you did well</p>', unsafe_allow_html=True)
         chips = "".join(f'<span class="chip">{s}</span>' for s in strongs)
         st.markdown(f"<div style='margin-bottom:.9rem'>{chips}</div>", unsafe_allow_html=True)
 
     # ── growth areas ──────────────────────────────────────────────────────────
     grows = scores.get("growth_areas", [])
     if grows:
-        st.markdown("<p style='font-size:.78rem;font-weight:600;color:#B0B0B0;"
-                    "text-transform:uppercase;letter-spacing:.08em;margin-bottom:.3rem'>"
-                    "One thing to try next time</p>", unsafe_allow_html=True)
+        st.markdown('<p style="font-size:.78rem;font-weight:600;color:#B0B0B0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.3rem">One thing to try next time</p>', unsafe_allow_html=True)
         for g in grows:
             st.markdown(f"""
             <div class="grow-row">
