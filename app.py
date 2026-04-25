@@ -388,12 +388,19 @@ def groq_client():
 def tts_b64(text: str, lang: str) -> str | None:
     l = "ar" if lang in ("ar", "mixed") else "en"
     try:
+        # Add "Breathing Room": 
+        # Commas and dots force gTTS to pause. We triple them for a natural effect.
+        polished_text = text.replace("...", ".... ").replace(",", ", ").replace("،", "، ")
+        
         buf = io.BytesIO()
-        gTTS(text=text, lang=l, slow=False).write_to_fp(buf)
+        # slow=False is good, but gTTS is still fast. 
+        # Polished_text helps regulate the speed.
+        gTTS(text=polished_text, lang=l, slow=False).write_to_fp(buf)
         buf.seek(0)
         return base64.b64encode(buf.read()).decode()
     except Exception as e:
         logger.warning(f"TTS: {e}"); return None
+
 
 def stt(audio_b64: str, lang: str) -> str:
     raw = base64.b64decode(audio_b64)
