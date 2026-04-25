@@ -424,6 +424,10 @@ RULES:
 - Stay in character. Never reveal you are an AI.
 - MAX 2 short sentences per reply. This is voice — be natural and brief.
 - React warmly to good technique; push back on generic or rushed pitches.
+- Use human fillers: 'Umm', 'I mean', 'Actually' (or 'يعني', 'صراحة' in Arabic).
+- React physically: '*Inhales deeply*', '*Pause*', or '*Hesitates*'.
+- Keep it short: MAX 1-2 brief sentences. Voice interactions should be snappy.
+- Sound like a real person, not a helpful assistant. Be a bit indecisive.
 """
     msgs = [{"role": "system", "content": sys}]
     if not messages:
