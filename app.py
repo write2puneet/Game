@@ -621,152 +621,186 @@ def fmt_time(secs):
     m, s = divmod(max(0, int(secs)), 60)
     return f"{m}:{s:02d}"
 
-def progress_bar_html(remaining, total):
-    pct   = max(0, remaining / total * 100)
-    color = "#E07000" if remaining < 60 else "#C9A84C"
-    return f"""<div style="height:3px;background:#E5E5E5;border-radius:2px;margin-bottom:1.2rem">
-      <div style="height:3px;width:{pct:.1f}%;background:{color};border-radius:2px;transition:width .5s"></div>
-    </div>"""
 
 def screen_session():
-    topbar()
-    pid   = ss("selected_profile", 1)
-    p     = PROFILES[pid]
-    lang  = ss("session_lang", "en")
-    msgs  = ss("messages", [])
-    ll    = {"en":"EN 🇬🇧","ar":"AR 🇸🇦","mixed":"Mixed 🔀"}.get(lang,"")
+    pid       = ss("selected_profile", 1)
+    p         = PROFILES[pid]
+    lang      = ss("session_lang", "en")
+    msgs      = ss("messages", [])
+    is_rtl    = lang in ("ar", "mixed")
+    cust_lbl  = "العميل" if is_rtl else "Customer"
+    ll        = {"en":"EN 🇬🇧","ar":"AR 🇸🇦","mixed":"Mixed 🔀"}.get(lang,"")
 
-    # ── initialise timer on first load ────────────────────────────────────────
+    # initialise timer
     if not ss("session_start"):
         sset("session_start", time.time())
-
     elapsed   = time.time() - ss("session_start")
-    remaining = max(0, SESSION_SECS - elapsed)
+    remaining = max(0.0, SESSION_SECS - elapsed)
+    pct       = remaining / SESSION_SECS * 100
+    bar_color = "#E07000" if remaining < 60 else "#C9A84C"
+    time_color= "#E07000" if remaining < 60 else "#888"
 
-    # ── auto-end when timer hits zero ─────────────────────────────────────────
+    # auto-end
     if remaining <= 0 and len(msgs) >= 2:
-        sset("screen", "scoring")
-        st.rerun()
+        sset("screen", "scoring"); st.rerun()
 
-    # ── header ────────────────────────────────────────────────────────────────
-    st.markdown(
-        f"<p style='color:#888;font-size:.82rem;margin-bottom:.4rem'>"
-        f"{p['emoji']} {p['name']} &nbsp;·&nbsp; {ll} &nbsp;·&nbsp; "
-        f"<span style='color:{'#E07000' if remaining<60 else '#888'}'>"
-        f"⏱ {fmt_time(remaining)}</span></p>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(progress_bar_html(remaining, SESSION_SECS), unsafe_allow_html=True)
-
-    # ── generate opening line once ────────────────────────────────────────────
+    # ── generate opening once ─────────────────────────────────────────────────
     if not msgs:
-        with st.spinner("Customer entering the store…"):
+        with st.spinner(""):
             opening = customer_reply(p, [], lang)
         msgs.append({"role": "assistant", "content": opening})
         sset("messages", msgs)
         b64 = tts_b64(opening, lang)
         sset("pending_audio", b64)
-        sset("pending_text",  opening)
         st.rerun()
 
-    # ── show current customer message ─────────────────────────────────────────
-    # Find last customer message
     last_customer = next(
-        (m["content"] for m in reversed(msgs) if m["role"] == "assistant"), ""
+        (m["content"] for m in reversed(msgs) if m["role"] == "assistant"), "…"
     )
-    cust_label = "العميل" if lang in ("ar","mixed") else "Customer"
-    is_rtl     = lang in ("ar","mixed")
-    rtl_style  = "direction:rtl;text-align:right;" if is_rtl else ""
+    turn_count = len([m for m in msgs if m["role"] == "user"])
+
+    # ── page CSS (scoped, no leaking) ─────────────────────────────────────────
+    st.markdown("""
+<style>
+/* hide ALL streamlit default chrome on session screen */
+#MainMenu, footer, header,
+div[data-testid="stToolbar"],
+div[data-testid="stDecoration"],
+div[data-testid="stStatusWidget"],
+div[data-testid="stHeader"] { display:none !important; }
+
+/* remove top padding so bar sits flush */
+.block-container { padding-top: 0 !important; padding-bottom: 120px !important; }
+
+/* floating mic button fixed bottom-right like Claude */
+.fab-mic {
+    position: fixed;
+    bottom: 28px;
+    right: 22px;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #E8521A;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(232,82,26,.45);
+    z-index: 9999;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background .15s, transform .1s;
+}
+.fab-mic:active { transform: scale(.93); }
+.fab-mic.rec    { background: #B02A08; animation: rpulse 1s infinite; }
+@keyframes rpulse {
+    0%,100% { box-shadow: 0 4px 18px rgba(176,42,8,.5); }
+    50%      { box-shadow: 0 6px 36px rgba(176,42,8,.9); }
+}
+
+/* hide the native Streamlit audio_input widget visually */
+div[data-testid="stAudioInput"] { opacity: 0; position: absolute;
+    pointer-events: none; height: 0; overflow: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
+    # ── thin progress bar ─────────────────────────────────────────────────────
+    st.markdown(f"""
+<div style="height:3px;background:#E5E5E5;width:100%;margin-bottom:0">
+  <div style="height:3px;width:{pct:.1f}%;background:{bar_color};transition:width .5s"></div>
+</div>""", unsafe_allow_html=True)
+
+    # ── small header row ──────────────────────────────────────────────────────
+    st.markdown(f"""
+<div style="display:flex;align-items:center;justify-content:space-between;
+            padding:.55rem 1rem .4rem;border-bottom:1px solid #EBEBEB;
+            margin-bottom:0">
+  <span style="font-size:.8rem;color:#888">{p['emoji']} {p['name']} · {ll}</span>
+  <span style="font-size:.8rem;color:{time_color};font-weight:500">⏱ {fmt_time(remaining)}</span>
+</div>""", unsafe_allow_html=True)
+
+    # ── customer bubble — full width, auto-height, no clipping ───────────────
+    dir_style = "direction:rtl;text-align:right" if is_rtl else ""
+    border    = "border-right:3px solid #C9A84C;border-left:none" if is_rtl else "border-left:3px solid #C9A84C"
 
     st.markdown(f"""
-    <p style='font-size:.7rem;font-weight:600;color:#B0B0B0;
-              text-transform:uppercase;letter-spacing:.09em;
-              margin-bottom:.5rem'>{cust_label}</p>
-    <div style='background:#fff;border-radius:20px;padding:1.4rem 1.4rem;
-                font-size:1.05rem;line-height:1.65;color:#1A1A1A;
-                box-shadow:0 1px 8px rgba(0,0,0,.08);
-                border-left:{"none;border-right" if is_rtl else "3px solid #C9A84C"};
-                {rtl_style}
-                min-height:80px;margin-bottom:1rem'>
-        {last_customer}
-    </div>""", unsafe_allow_html=True)
+<div style="padding:1.2rem 1rem 0">
+  <p style="font-size:.68rem;font-weight:600;color:#B0B0B0;
+             text-transform:uppercase;letter-spacing:.1em;margin:0 0 .55rem">
+    {cust_lbl}
+  </p>
+  <div style="background:#fff;border-radius:20px;padding:1.4rem 1.5rem;
+              font-size:1.05rem;line-height:1.7;color:#1A1A1A;
+              box-shadow:0 1px 10px rgba(0,0,0,.08);
+              {border};
+              {dir_style};
+              word-wrap:break-word;overflow-wrap:break-word">
+    {last_customer}
+  </div>
+</div>""", unsafe_allow_html=True)
 
-    # ── autoplay customer audio (only once per new message) ───────────────────
-    pending_audio = ss("pending_audio")
-    if pending_audio:
+    # ── autoplay audio ────────────────────────────────────────────────────────
+    if ss("pending_audio"):
+        b64 = ss("pending_audio")
         st.markdown(
             f'<audio autoplay style="display:none">'
-            f'<source src="data:audio/mp3;base64,{pending_audio}" type="audio/mp3">'
-            f'</audio>',
-            unsafe_allow_html=True,
-        )
-        sset("pending_audio", None)   # clear so it doesn't replay on next rerun
+            f'<source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>',
+            unsafe_allow_html=True)
+        sset("pending_audio", None)
 
-    # ── status text ───────────────────────────────────────────────────────────
-    turn_count = len([m for m in msgs if m["role"] == "user"])
+    # ── status hint ───────────────────────────────────────────────────────────
     if turn_count == 0:
-        hint = "اضغط الميكروفون للرد" if lang in ("ar","mixed") else "Tap the mic below to respond"
+        hint = "اضغط 🎙 للرد" if is_rtl else "Tap 🎙 to respond"
     else:
-        hint = "اضغط للرد مرة أخرى" if lang in ("ar","mixed") else "Tap mic to respond"
+        hint = "اضغط للرد مرة أخرى" if is_rtl else "Tap mic to respond"
 
-    st.markdown(
-        f"<p style='text-align:center;font-size:.78rem;color:#B0B0B0;"
-        f"letter-spacing:.04em;text-transform:uppercase;margin-bottom:1.2rem'>"
-        f"{hint}</p>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"""
+<div style="text-align:center;padding:1rem 0 .5rem;
+            font-size:.76rem;color:#C0C0C0;letter-spacing:.04em;
+            text-transform:uppercase">{hint}</div>""", unsafe_allow_html=True)
 
-    # ── mic input — Streamlit native, works perfectly on mobile ───────────────
+    # ── end-early button — subtle, not competing with mic ────────────────────
+    st.markdown("""
+<div style="position:fixed;bottom:28px;left:22px;z-index:9998">""",
+        unsafe_allow_html=True)
+    end_early = st.button("Done ✓", key="end_early_btn",
+                          help="End session and get your feedback")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if end_early:
+        if len(msgs) >= 3:
+            sset("screen", "scoring"); st.rerun()
+        else:
+            st.toast("Have at least one exchange first 💪")
+
+    # ── NATIVE mic input (hidden visually, triggered programmatically) ────────
+    # Key increments each turn so widget resets after each recording
     audio_val = st.audio_input(
-        "Record your response",
-        key=f"mic_{len(msgs)}",   # new key each turn forces a fresh recorder
+        "🎙",
+        key=f"mic_{len(msgs)}",
         label_visibility="collapsed",
     )
 
-    # ── process recording ─────────────────────────────────────────────────────
+    # ── process new recording ─────────────────────────────────────────────────
     if audio_val is not None:
         raw = audio_val.read()
-        # Guard: only process once (compare against last processed bytes)
         if raw and raw != ss("last_processed_bytes", b""):
             sset("last_processed_bytes", raw)
-
-            with st.spinner("…" if lang in ("ar","mixed") else "…"):
-                # STT
+            with st.spinner(""):
                 try:
-                    b64_audio = base64.b64encode(raw).decode()
-                    spoken    = stt(b64_audio, lang)
+                    spoken = stt(base64.b64encode(raw).decode(), lang)
                 except Exception as e:
-                    st.error(f"Could not transcribe audio: {e}")
+                    st.error(f"Transcription failed: {e}")
                     spoken = ""
-
                 if spoken.strip():
-                    msgs.append({"role": "user", "content": spoken})
-                    # LLM reply
+                    msgs.append({"role": "user",      "content": spoken})
                     reply = customer_reply(p, msgs, lang)
                     msgs.append({"role": "assistant", "content": reply})
                     sset("messages", msgs)
-                    # TTS
-                    b64_reply = tts_b64(reply, lang)
-                    sset("pending_audio", b64_reply)
-                    sset("pending_text",  reply)
+                    sset("pending_audio", tts_b64(reply, lang))
+                    sset("last_processed_bytes", b"")
                     st.rerun()
-
-    # ── end early button — small, unobtrusive ─────────────────────────────────
-    st.markdown("<div style='margin-top:1.5rem'>", unsafe_allow_html=True)
-    if st.button("Finish & get feedback →", use_container_width=True):
-        if len(msgs) >= 3:
-            sset("screen", "scoring")
-            st.rerun()
-        else:
-            st.toast("Have at least one exchange first — keep going! 💪")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── auto-rerun every 10s to keep timer ticking ────────────────────────────
-    # Only when no audio is being processed (avoids interrupting recordings)
-    if remaining > 0 and not audio_val:
-        time.sleep(0)   # yield; timer updates on next user interaction
-        # Note: aggressive auto-rerun would interrupt mic input on mobile.
-        # Timer updates naturally whenever user taps mic or the page rerenders.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
