@@ -181,12 +181,20 @@ div[data-testid="stStatusWidget"] { display: none !important; }
 
 /* ── mic button — THE STAR ── */
 .mic-wrap {
+    position: fixed;
+    bottom: 2rem;       /* Distance from bottom */
+    left: 50%;          /* Move to middle */
+    transform: translateX(-50%); /* Perfectly center it */
+    z-index: 999;       /* Ensure it's above other bars */
+    display: flex;
+    flex-direction: column;
+    align-items: center;    
+    /*
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    width: 100%;
     margin-top: .5rem;
+    */
 }
 .mic-btn {
     width: 72px; height: 72px;
