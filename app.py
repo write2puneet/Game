@@ -194,8 +194,8 @@ div[data-testid="stStatusWidget"] { display: none !important; }
     */
 }
 .mic-btn {
-    width: 72px; height: 72px;
-    border-radius: 50%;
+    width: 100px; height: 100px;
+    border-radius: 70%;
     background: #E8521A;    /* Claude orange */
     border: none;
     display: flex; align-items: center; justify-content: center;
