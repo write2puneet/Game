@@ -181,14 +181,11 @@ div[data-testid="stStatusWidget"] { display: none !important; }
 
 /* ── mic button — THE STAR ── */
 .mic-wrap {
-    position: fixed;
-    bottom: 2rem;       /* Distance from bottom */
-    left: 50%;          /* Move to middle */
-    transform: translateX(-50%); /* Perfectly center it */
-    z-index: 999;       /* Ensure it's above other bars */
     display: flex;
-    flex-direction: column;
-    align-items: center;    
+    width: 100%;
+    justify-content: center;
+    margin-top: 2rem;
+    clear: both; /* Prevents other elements from pushing it to the side */ 
     /*
     display: flex;
     flex-direction: column;
