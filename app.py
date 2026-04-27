@@ -182,20 +182,13 @@ div[data-testid="stStatusWidget"] { display: none !important; }
 /* ── mic button — THE STAR ── */
 .mic-wrap {
     display: flex;
-    width: 100%;
-    justify-content: center;
-    margin-top: 2rem;
-    clear: both; /* Prevents other elements from pushing it to the side */ 
-    /*
-    display: flex;
     flex-direction: column;
     align-items: center;
     margin-top: .5rem;
-    */
 }
 .mic-btn {
-    width: 100px; height: 100px;
-    border-radius: 70%;
+    width: 72px; height: 72px;
+    border-radius: 50%;
     background: #E8521A;    /* Claude orange */
     border: none;
     display: flex; align-items: center; justify-content: center;
