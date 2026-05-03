@@ -645,43 +645,61 @@ def screen_instructions():
 # SCREEN 5 — LIVE SESSION
 # ══════════════════════════════════════════════════════════════════════════════
 def screen_session():
-    pid       = ss("selected_profile", 1)
-    p         = PROFILES[pid]
-    lang      = ss("session_lang", "en")
-    msgs      = ss("messages", [])
-    is_rtl    = lang in ("ar", "mixed")
-    cust_lbl  = "العميل" if is_rtl else "Customer"
+    # ── safety guard: if critical state is missing, go back to start ─────────
+    # This prevents blank screens if Streamlit clears session state
+    if not ss("selected_profile") or not ss("session_lang") or not ss("agent_name"):
+        sset("screen", "welcome")
+        st.rerun()
+        return
 
-    # timer
-    if not ss("session_start"):
-        sset("session_start", time.time())
-    elapsed   = time.time() - ss("session_start")
+    pid      = ss("selected_profile", 1)
+    p        = PROFILES[pid]
+    lang     = ss("session_lang", "en")
+    is_rtl   = lang in ("ar", "mixed")
+    cust_lbl = "العميل" if is_rtl else "Customer"
+    ll       = {"en": "EN 🇬🇧", "ar": "AR 🇸🇦", "mixed": "Mixed 🔀"}.get(lang, "")
+
+    # ── initialise messages list safely ──────────────────────────────────────
+    # Never use [] as default — always persist via session_state directly
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+    msgs = st.session_state["messages"]
+
+    # ── timer: only start once, never reset ──────────────────────────────────
+    if "session_start" not in st.session_state:
+        st.session_state["session_start"] = time.time()
+    elapsed   = time.time() - st.session_state["session_start"]
     remaining = max(0.0, SESSION_SECS - elapsed)
     pct       = remaining / SESSION_SECS * 100
     bar_color = "#E07000" if remaining < 60 else "#C9A84C"
     t_color   = "#E07000" if remaining < 60 else "#888"
-    ll        = {"en": "EN 🇬🇧", "ar": "AR 🇸🇦", "mixed": "Mixed 🔀"}.get(lang, "")
 
-    if remaining <= 0 and len(msgs) >= 2:
-        sset("screen", "scoring")
-        st.rerun()
-
-    # generate opening once
-    if not msgs:
+    # ── generate opening line once, guard with dedicated flag ────────────────
+    # Using a flag instead of checking len(msgs)==0 avoids race on rerun
+    if not st.session_state.get("opening_done", False):
+        st.session_state["opening_done"] = True   # set BEFORE API call
         with st.spinner(""):
             opening = customer_reply(p, [], lang)
         msgs.append({"role": "assistant", "content": opening})
-        sset("messages", msgs)
-        sset("pending_audio", tts_b64(opening, lang))
+        st.session_state["messages"] = msgs
+        st.session_state["pending_audio"] = tts_b64(opening, lang, pid)
         st.rerun()
+        return
 
-    # ── session-screen CSS (scoped, no leaking) ───────────────────────────────
-    st.markdown("""
-<style>
-.block-container{padding-bottom:2rem !important;}
-</style>""", unsafe_allow_html=True)
+    # ── auto-end only when timer truly expired AND session has content ────────
+    # Extra guard: require at least 1 salesperson turn to avoid instant scoring
+    sp_turns = len([m for m in msgs if m["role"] == "user"])
+    if remaining <= 0 and sp_turns >= 1:
+        sset("screen", "scoring")
+        st.rerun()
+        return
 
-    # ── thin progress bar ─────────────────────────────────────────────────────
+    # ── CSS ───────────────────────────────────────────────────────────────────
+    st.markdown(
+        "<style>.block-container{padding-bottom:2rem !important;}</style>",
+        unsafe_allow_html=True)
+
+    # ── progress bar ─────────────────────────────────────────────────────────
     st.markdown(
         f'<div class="prog-wrap"><div class="prog-fill" '
         f'style="width:{pct:.1f}%;background:{bar_color}"></div></div>',
@@ -689,11 +707,12 @@ def screen_session():
 
     # ── mini header ───────────────────────────────────────────────────────────
     st.markdown(
-        f'<div style="display:flex;align-items:center;justify-content:space-between;'
-        f'padding:.4rem 0 .8rem">'
-        f'<span style="font-size:.8rem;color:#888">{p["emoji"]} {p["name"]} · {ll}</span>'
-        f'<span style="font-size:.8rem;color:{t_color};font-weight:500">⏱ {fmt_time(remaining)}</span>'
-        f'</div>',
+        f'<div style="display:flex;align-items:center;'
+        f'justify-content:space-between;padding:.4rem 0 .8rem">'
+        f'<span style="font-size:.8rem;color:#888">'
+        f'{p["emoji"]} {p["name"]} · {ll}</span>'
+        f'<span style="font-size:.8rem;color:{t_color};font-weight:500">'
+        f'⏱ {fmt_time(remaining)}</span></div>',
         unsafe_allow_html=True)
 
     # ── customer bubble ───────────────────────────────────────────────────────
@@ -702,8 +721,7 @@ def screen_session():
 
     border_style = (
         "border-right:3px solid #C9A84C;border-left:none"
-        if is_rtl else
-        "border-left:3px solid #C9A84C"
+        if is_rtl else "border-left:3px solid #C9A84C"
     )
     dir_style = "direction:rtl;text-align:right" if is_rtl else ""
 
@@ -711,28 +729,28 @@ def screen_session():
         f'<p style="font-size:.68rem;font-weight:600;color:#B0B0B0;'
         f'text-transform:uppercase;letter-spacing:.1em;margin:0 0 .5rem">'
         f'{cust_lbl}</p>'
-        f'<div style="background:#fff;border-radius:20px;padding:1.4rem 1.5rem;'
-        f'font-size:1.05rem;line-height:1.7;color:#1A1A1A;'
+        f'<div style="background:#fff;border-radius:20px;'
+        f'padding:1.4rem 1.5rem;font-size:1.05rem;line-height:1.7;color:#1A1A1A;'
         f'box-shadow:0 1px 10px rgba(0,0,0,.08);{border_style};{dir_style};'
         f'word-wrap:break-word;overflow-wrap:break-word;margin-bottom:.8rem">'
         f'{last_customer}</div>',
         unsafe_allow_html=True)
 
-    # ── autoplay customer audio once ──────────────────────────────────────────
-    if ss("pending_audio"):
-        b64 = ss("pending_audio")
+    # ── autoplay audio exactly once per new reply ─────────────────────────────
+    if st.session_state.get("pending_audio"):
+        b64_audio = st.session_state["pending_audio"]
         st.markdown(
             f'<audio autoplay style="display:none">'
-            f'<source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>',
+            f'<source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">'
+            f'</audio>',
             unsafe_allow_html=True)
-        sset("pending_audio", None)
+        st.session_state["pending_audio"] = None   # clear immediately
 
-    # ── hint text ─────────────────────────────────────────────────────────────
-    turn_count = len([m for m in msgs if m["role"] == "user"])
+    # ── hint ──────────────────────────────────────────────────────────────────
     hint = (
         ("اضغط الزر للرد" if is_rtl else "Tap the button below to respond")
-        if turn_count == 0 else
-        ("اضغط للرد" if is_rtl else "Tap to respond")
+        if sp_turns == 0 else
+        ("اضغط للرد مرة أخرى" if is_rtl else "Tap to respond")
     )
     st.markdown(
         f'<p style="text-align:center;font-size:.76rem;color:#C0C0C0;'
@@ -740,44 +758,59 @@ def screen_session():
         f'{hint}</p>',
         unsafe_allow_html=True)
 
-    # ── MIC INPUT — centred via global CSS ────────────────────────────────────
+    # ── MIC INPUT ─────────────────────────────────────────────────────────────
+    # Key is fixed to "mic_rec" — does NOT change with message count.
+    # This prevents the widget from being destroyed/recreated mid-session
+    # which was causing hangs and double-processing.
+    # We use a separate "mic_turn" counter to know when a NEW recording arrived.
     audio_val = st.audio_input(
         "Record",
-        key=f"mic_{len(msgs)}",
+        key="mic_rec",
         label_visibility="collapsed",
     )
 
     # ── done button ───────────────────────────────────────────────────────────
     st.markdown(
-        '<p style="text-align:center;margin-top:.5rem">',
+        '<p style="text-align:center;margin-top:.6rem">',
         unsafe_allow_html=True)
     done = st.button("Done — get my feedback", key="done_btn")
     st.markdown('</p>', unsafe_allow_html=True)
+
     if done:
-        if len(msgs) >= 3:
+        if sp_turns >= 1:
             sset("screen", "scoring")
             st.rerun()
         else:
             st.toast("Have at least one exchange first 💪")
+        return   # stop processing below after done click
 
-    # ── process recording ─────────────────────────────────────────────────────
+    # ── process new recording ─────────────────────────────────────────────────
     if audio_val is not None:
         raw = audio_val.read()
-        if raw and raw != ss("last_processed_bytes", b""):
-            sset("last_processed_bytes", raw)
+        # Deduplicate: only process if bytes are genuinely new
+        # Use hash comparison, not full bytes equality (faster, safer)
+        import hashlib
+        raw_hash = hashlib.md5(raw).hexdigest() if raw else ""
+        last_hash = st.session_state.get("last_audio_hash", "")
+
+        if raw and raw_hash != last_hash:
+            st.session_state["last_audio_hash"] = raw_hash
+
             with st.spinner(""):
                 try:
                     spoken = stt(base64.b64encode(raw).decode(), lang)
                 except Exception as e:
-                    st.error(f"Could not transcribe: {e}")
+                    st.error(f"Could not transcribe audio. Please try again. ({e})")
                     spoken = ""
+
                 if spoken.strip():
                     msgs.append({"role": "user",      "content": spoken})
                     reply = customer_reply(p, msgs, lang)
                     msgs.append({"role": "assistant", "content": reply})
-                    sset("messages", msgs)
-                    sset("pending_audio", tts_b64(reply, lang))
-                    sset("last_processed_bytes", b"")
+                    st.session_state["messages"] = msgs
+                    st.session_state["pending_audio"] = tts_b64(reply, lang, pid)
+                    # Clear hash so next recording is always treated as new
+                    st.session_state["last_audio_hash"] = ""
                     st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
