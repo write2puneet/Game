@@ -339,15 +339,48 @@ def groq_client():
     return Groq(api_key=key)
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
-def tts_b64(text: str, lang: str):
-    l = "ar" if lang in ("ar", "mixed") else "en"
+# Groq PlayAI TTS — faster, more natural, same API key
+# Voices: Fritz-PlayAI (EN male), Aaliya-PlayAI (AR female),
+#         Arista-PlayAI (EN female), Mufasa-PlayAI (EN deep male)
+# Falls back to gTTS if Groq TTS fails
+
+VOICE_MAP = {
+    # profile_id → (english_voice, arabic_voice)
+    1: ("Fritz-PlayAI",   "Aaliya-PlayAI"),   # First-Time Browser — male customer
+    2: ("Arista-PlayAI",  "Aaliya-PlayAI"),   # Gift Shopper — female customer
+    3: ("Mufasa-PlayAI",  "Aaliya-PlayAI"),   # Oud Loyalist — authoritative male
+}
+
+def tts_b64(text: str, lang: str, profile_id: int = 1):
+    """Generate speech using Groq PlayAI TTS. Falls back to gTTS on error."""
+    # Pick voice based on profile and language
+    en_voice, ar_voice = VOICE_MAP.get(profile_id, ("Fritz-PlayAI", "Aaliya-PlayAI"))
+    voice = ar_voice if lang in ("ar", "mixed") else en_voice
+
+    # Groq TTS: fast, natural, same API key
     try:
+        client = groq_client()
+        response = client.audio.speech.create(
+            model="playai-tts",          # Groq PlayAI TTS model
+            voice=voice,
+            input=text,
+            response_format="mp3",
+        )
+        # response.content is bytes
+        audio_bytes = response.content if hasattr(response, "content") else b"".join(response.iter_bytes())
+        return base64.b64encode(audio_bytes).decode()
+    except Exception as e:
+        logger.warning(f"Groq TTS failed ({e}), falling back to gTTS")
+
+    # Fallback: gTTS (free, slower, more robotic)
+    try:
+        gtts_lang = "ar" if lang in ("ar", "mixed") else "en"
         buf = io.BytesIO()
-        gTTS(text=text, lang=l, slow=False).write_to_fp(buf)
+        gTTS(text=text, lang=gtts_lang, slow=False).write_to_fp(buf)
         buf.seek(0)
         return base64.b64encode(buf.read()).decode()
     except Exception as e:
-        logger.warning(f"TTS: {e}")
+        logger.warning(f"gTTS also failed: {e}")
         return None
 
 # ── STT ────────────────────────────────────────────────────────────────────────
