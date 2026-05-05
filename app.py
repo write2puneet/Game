@@ -247,31 +247,17 @@ def groq_client():
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
 def tts_b64(text: str, lang: str, profile_id: int = 1):
-    """Groq PlayAI TTS with gTTS fallback."""
-    VOICE_MAP = {
-        1: ("Fritz-PlayAI",  "Aaliya-PlayAI"),
-        2: ("Arista-PlayAI", "Aaliya-PlayAI"),
-        3: ("Mufasa-PlayAI", "Aaliya-PlayAI"),
-    }
-    en_v, ar_v = VOICE_MAP.get(profile_id, ("Fritz-PlayAI", "Aaliya-PlayAI"))
-    voice = ar_v if lang in ("ar", "mixed") else en_v
+    """Convert text to base64 MP3 using gTTS (reliable, free)."""
+    if not text or not text.strip():
+        return None
+    tts_lang = "ar" if lang in ("ar", "mixed") else "en"
     try:
-        client = groq_client()
-        resp = client.audio.speech.create(
-            model="playai-tts", voice=voice,
-            input=text, response_format="mp3")
-        audio_bytes = (resp.content
-                       if hasattr(resp, "content")
-                       else b"".join(resp.iter_bytes()))
-        return base64.b64encode(audio_bytes).decode()
-    except Exception as e:
-        logger.warning(f"Groq TTS failed ({e}), trying gTTS")
-    try:
-        l = "ar" if lang in ("ar", "mixed") else "en"
         buf = io.BytesIO()
-        gTTS(text=text, lang=l, slow=False).write_to_fp(buf)
+        gTTS(text=text, lang=tts_lang, slow=False).write_to_fp(buf)
         buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
+        data = buf.read()
+        if data:
+            return base64.b64encode(data).decode()
     except Exception as e:
         logger.warning(f"gTTS failed: {e}")
     return None
@@ -597,13 +583,24 @@ def screen_session():
 
     # ── generate opening once ─────────────────────────────────────────────────
     if not st.session_state.get("opening_done"):
-        st.session_state["opening_done"] = True
+        # Show loading state immediately so user sees something
+        st.markdown(
+            f'<p style="font-size:.66rem;font-weight:600;color:#B0B0B0;'
+            f'text-transform:uppercase;letter-spacing:.1em;margin:0 0 .45rem">'
+            f'{"العميل" if is_rtl else "Customer"}</p>'
+            f'<div style="background:#fff;border-radius:20px;padding:1.4rem 1.5rem;'
+            f'font-size:1.05rem;line-height:1.7;color:#B0B0B0;'
+            f'box-shadow:0 1px 10px rgba(0,0,0,.08);border-left:3px solid #E5E5E5">'
+            f'{"جاري التحضير…" if is_rtl else "Starting session…"}</div>',
+            unsafe_allow_html=True)
         with st.spinner(""):
-            opening = customer_reply(p, [], lang)
+            opening  = customer_reply(p, [], lang)
+            audio_b64 = tts_b64(opening, lang, pid)
         msgs.append({"role":"assistant","content":opening})
+        st.session_state["opening_done"]  = True
         st.session_state["messages"]      = msgs
-        st.session_state["display_msg"]   = opening   # stable snapshot for bubble
-        st.session_state["pending_audio"] = tts_b64(opening, lang, pid)
+        st.session_state["display_msg"]   = opening
+        st.session_state["pending_audio"] = audio_b64
         st.session_state["audio_played"]  = False
         st.rerun(); return
 
@@ -650,13 +647,16 @@ def screen_session():
         unsafe_allow_html=True)
 
     # ── autoplay audio — inject once, clear immediately after ─────────────────
-    if st.session_state.get("pending_audio") and not st.session_state.get("audio_played"):
-        b64a = st.session_state.pop("pending_audio")   # pop = read + clear atomically
-        st.session_state["audio_played"] = True
-        st.markdown(
-            f'<audio autoplay style="display:none">'
-            f'<source src="data:audio/mp3;base64,{b64a}" type="audio/mp3"></audio>',
-            unsafe_allow_html=True)
+    pending = st.session_state.get("pending_audio")
+    if pending and not st.session_state.get("audio_played"):
+        st.session_state["audio_played"]  = True
+        st.session_state["pending_audio"] = None
+        # Only inject if we have real base64 audio data
+        if isinstance(pending, str) and len(pending) > 100:
+            st.markdown(
+                f'<audio autoplay style="display:none">'
+                f'<source src="data:audio/mp3;base64,{pending}" type="audio/mp3"></audio>',
+                unsafe_allow_html=True)
 
     # ── hint ──────────────────────────────────────────────────────────────────
     hint_txt = (
