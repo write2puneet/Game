@@ -561,7 +561,7 @@ def screen_instructions():
     if st.button("Start Session →", use_container_width=True):
         # Clean slate for new session
         for k in ["messages","session_start","opening_done","pending_audio",
-                  "last_audio_hash","processing"]:
+                  "last_audio_hash","processing","display_msg","audio_played"]:
             if k in st.session_state: del st.session_state[k]
         sset("screen", "session")
         st.rerun()
@@ -601,13 +601,21 @@ def screen_session():
         with st.spinner(""):
             opening = customer_reply(p, [], lang)
         msgs.append({"role":"assistant","content":opening})
-        st.session_state["messages"] = msgs
+        st.session_state["messages"]      = msgs
+        st.session_state["display_msg"]   = opening   # stable snapshot for bubble
         st.session_state["pending_audio"] = tts_b64(opening, lang, pid)
+        st.session_state["audio_played"]  = False
         st.rerun(); return
 
     # ── auto-end when timer expires ───────────────────────────────────────────
     if remaining <= 0 and sp_turns >= 1:
         sset("screen","scoring"); st.rerun(); return
+
+    # ── DISPLAY SNAPSHOT ─────────────────────────────────────────────────────
+    # display_msg is set atomically with messages after each round-trip.
+    # It NEVER changes mid-render — eliminates the flickering bubble.
+    display_msg = st.session_state.get("display_msg") or next(
+        (m["content"] for m in reversed(msgs) if m["role"]=="assistant"), "…")
 
     # ── thin progress bar ─────────────────────────────────────────────────────
     st.markdown(
@@ -625,12 +633,11 @@ def screen_session():
         f'⏱ {fmt_time(remaining)}</span></div>',
         unsafe_allow_html=True)
 
-    # ── customer bubble ───────────────────────────────────────────────────────
-    last_msg = next(
-        (m["content"] for m in reversed(msgs) if m["role"]=="assistant"), "…")
-    cust_lbl  = "العميل" if is_rtl else "Customer"
-    bdr       = "border-right:3px solid #C9A84C;border-left:none" if is_rtl else "border-left:3px solid #C9A84C"
-    txt_dir   = "direction:rtl;text-align:right;" if is_rtl else ""
+    # ── customer bubble — stable, never flickers ──────────────────────────────
+    cust_lbl = "العميل" if is_rtl else "Customer"
+    bdr      = ("border-right:3px solid #C9A84C;border-left:none"
+                if is_rtl else "border-left:3px solid #C9A84C")
+    txt_dir  = "direction:rtl;text-align:right;" if is_rtl else ""
 
     st.markdown(
         f'<p style="font-size:.66rem;font-weight:600;color:#B0B0B0;'
@@ -639,48 +646,38 @@ def screen_session():
         f'font-size:1.05rem;line-height:1.7;color:#1A1A1A;'
         f'box-shadow:0 1px 10px rgba(0,0,0,.08);{bdr};{txt_dir}'
         f'word-wrap:break-word;overflow-wrap:break-word;margin-bottom:1rem">'
-        f'{last_msg}</div>',
+        f'{display_msg}</div>',
         unsafe_allow_html=True)
 
-    # ── autoplay customer audio ────────────────────────────────────────────────
-    if st.session_state.get("pending_audio"):
-        b64a = st.session_state["pending_audio"]
+    # ── autoplay audio — inject once, clear immediately after ─────────────────
+    if st.session_state.get("pending_audio") and not st.session_state.get("audio_played"):
+        b64a = st.session_state.pop("pending_audio")   # pop = read + clear atomically
+        st.session_state["audio_played"] = True
         st.markdown(
             f'<audio autoplay style="display:none">'
             f'<source src="data:audio/mp3;base64,{b64a}" type="audio/mp3"></audio>',
             unsafe_allow_html=True)
-        st.session_state["pending_audio"] = None
 
-    # ── status / hint ─────────────────────────────────────────────────────────
-    processing = st.session_state.get("processing", False)
-    if processing:
-        hint_txt = "جاري المعالجة…" if is_rtl else "Processing your response…"
-        hint_col = "#C9A84C"
-    elif sp_turns == 0:
-        hint_txt = "اضغط للرد" if is_rtl else "Tap the button to respond"
-        hint_col = "#B0B0B0"
-    else:
-        hint_txt = "اضغط للرد" if is_rtl else "Tap to respond"
-        hint_col = "#B0B0B0"
-
+    # ── hint ──────────────────────────────────────────────────────────────────
+    hint_txt = (
+        ("اضغط للرد" if is_rtl else "Tap the button to respond")
+        if sp_turns == 0 else
+        ("اضغط للرد" if is_rtl else "Tap to respond")
+    )
     st.markdown(
-        f'<p style="text-align:center;font-size:.75rem;color:{hint_col};'
+        f'<p style="text-align:center;font-size:.75rem;color:#B0B0B0;'
         f'letter-spacing:.04em;text-transform:uppercase;margin:0 0 .4rem">'
         f'{hint_txt}</p>',
         unsafe_allow_html=True)
 
-    # ── inject mic CSS ────────────────────────────────────────────────────────
+    # ── mic ───────────────────────────────────────────────────────────────────
     st.markdown(MIC_CSS, unsafe_allow_html=True)
-
-    # ── mic input via Streamlit native widget ─────────────────────────────────
-    # Key is fixed — changing it caused hangs. Deduplication by byte hash below.
     audio_val = st.audio_input("Record", key="mic_rec",
                                label_visibility="collapsed")
 
     # ── done button ───────────────────────────────────────────────────────────
     st.markdown(
-        '<p style="text-align:center;margin-top:.4rem;font-size:.8rem;color:#C0C0C0">'
-        'or</p>',
+        '<p style="text-align:center;margin-top:.4rem;font-size:.8rem;color:#C0C0C0">or</p>',
         unsafe_allow_html=True)
     if st.button("Done — get my feedback", key="done_btn", use_container_width=True):
         if sp_turns >= 1:
@@ -702,16 +699,25 @@ def screen_session():
                         spoken = stt(raw, lang)
                     except Exception as e:
                         st.error(f"Transcription failed — please try again. ({e})")
+                        st.session_state["last_audio_hash"] = ""
                         st.rerun(); return
 
-                    if spoken.strip():
-                        msgs.append({"role":"user",      "content":spoken})
-                        reply = customer_reply(p, msgs, lang)
-                        msgs.append({"role":"assistant", "content":reply})
-                        st.session_state["messages"]      = msgs
-                        st.session_state["pending_audio"] = tts_b64(reply, lang, pid)
-                        st.session_state["last_audio_hash"] = ""
-                        st.rerun()
+                    if not spoken.strip():
+                        st.rerun(); return
+
+                    msgs.append({"role":"user",      "content":spoken})
+                    reply = customer_reply(p, msgs, lang)
+                    msgs.append({"role":"assistant", "content":reply})
+
+                    # Update ALL display state atomically before rerun
+                    st.session_state["messages"]      = msgs
+                    st.session_state["display_msg"]   = reply   # new bubble
+                    st.session_state["pending_audio"] = tts_b64(reply, lang, pid)
+                    st.session_state["audio_played"]  = False
+                    st.session_state["last_audio_hash"] = ""
+                    st.rerun()
+
+
 
 
 def screen_scoring():
@@ -839,7 +845,7 @@ def screen_debrief():
     if st.button("Practice Again →", use_container_width=True):
         for k in ["messages","session_start","opening_done","pending_audio",
                   "last_audio_hash","processing","last_scores","last_points",
-                  "session_lang","selected_profile"]:
+                  "session_lang","selected_profile","display_msg","audio_played"]:
             if k in st.session_state: del st.session_state[k]
         sset("screen","pick_profile"); st.rerun()
 
