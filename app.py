@@ -546,9 +546,11 @@ def screen_instructions():
     st.info("💡 Allow microphone when the browser asks — required once only.")
     if st.button("Start Session →", use_container_width=True):
         # Clean slate for new session
-        for k in ["messages","session_start","opening_done","pending_audio",
-                  "last_audio_hash","processing","display_msg","audio_played"]:
-            if k in st.session_state: del st.session_state[k]
+        # Clear all session keys for a fresh start
+        for k in list(st.session_state.keys()):
+            if k not in ("agent_name","total_points","screen","selected_profile",
+                         "session_lang"):
+                del st.session_state[k]
         sset("screen", "session")
         st.rerun()
     if st.button("← Change customer", use_container_width=False):
@@ -609,12 +611,12 @@ def screen_session():
         sset("screen","scoring"); st.rerun(); return
 
     # ── DISPLAY SNAPSHOT ─────────────────────────────────────────────────────
-    # display_msg is set atomically with messages after each round-trip.
-    # It NEVER changes mid-render — eliminates the flickering bubble.
+    # display_msg is written atomically after each full round-trip.
+    # Never read from live msgs list — that causes flicker.
     display_msg = st.session_state.get("display_msg") or next(
         (m["content"] for m in reversed(msgs) if m["role"]=="assistant"), "…")
 
-    # ── thin progress bar ─────────────────────────────────────────────────────
+    # ── progress bar ──────────────────────────────────────────────────────────
     st.markdown(
         f'<div style="height:3px;background:#E5E5E5;border-radius:2px;margin-bottom:.6rem">'
         f'<div style="height:3px;width:{pct:.1f}%;background:{bar_color};'
@@ -630,7 +632,7 @@ def screen_session():
         f'⏱ {fmt_time(remaining)}</span></div>',
         unsafe_allow_html=True)
 
-    # ── customer bubble — stable, never flickers ──────────────────────────────
+    # ── customer bubble ───────────────────────────────────────────────────────
     cust_lbl = "العميل" if is_rtl else "Customer"
     bdr      = ("border-right:3px solid #C9A84C;border-left:none"
                 if is_rtl else "border-left:3px solid #C9A84C")
@@ -646,12 +648,11 @@ def screen_session():
         f'{display_msg}</div>',
         unsafe_allow_html=True)
 
-    # ── autoplay audio — inject once, clear immediately after ─────────────────
+    # ── autoplay audio once ───────────────────────────────────────────────────
     pending = st.session_state.get("pending_audio")
     if pending and not st.session_state.get("audio_played"):
         st.session_state["audio_played"]  = True
         st.session_state["pending_audio"] = None
-        # Only inject if we have real base64 audio data
         if isinstance(pending, str) and len(pending) > 100:
             st.markdown(
                 f'<audio autoplay style="display:none">'
@@ -660,8 +661,6 @@ def screen_session():
 
     # ── hint ──────────────────────────────────────────────────────────────────
     hint_txt = (
-        ("اضغط للرد" if is_rtl else "Tap the button to respond")
-        if sp_turns == 0 else
         ("اضغط للرد" if is_rtl else "Tap to respond")
     )
     st.markdown(
@@ -670,9 +669,16 @@ def screen_session():
         f'{hint_txt}</p>',
         unsafe_allow_html=True)
 
-    # ── mic ───────────────────────────────────────────────────────────────────
+    # ── mic input ─────────────────────────────────────────────────────────────
+    # KEY DESIGN: key = "mic_{turn}" where turn = sp_turns.
+    # After we process a recording and append a user message, sp_turns increments,
+    # so the key changes and Streamlit creates a FRESH empty widget.
+    # This guarantees we never re-read the previous recording.
+    # We do NOT clear last_audio_hash between turns — the new key already ensures
+    # a fresh widget. last_audio_hash just guards within the same turn.
     st.markdown(MIC_CSS, unsafe_allow_html=True)
-    audio_val = st.audio_input("Record", key="mic_rec",
+    mic_key   = f"mic_{sp_turns}"
+    audio_val = st.audio_input("Record", key=mic_key,
                                label_visibility="collapsed")
 
     # ── done button ───────────────────────────────────────────────────────────
@@ -686,38 +692,44 @@ def screen_session():
             st.toast("Have at least one exchange first 💪")
         return
 
-    # ── process new recording ─────────────────────────────────────────────────
-    if audio_val is not None:
+    # ── process recording ─────────────────────────────────────────────────────
+    # Guard 1: widget must have data
+    # Guard 2: hash must differ from last processed (within this turn)
+    # Guard 3: not currently locked (prevents double-fire on fast reruns)
+    if audio_val is not None and not st.session_state.get("processing_lock"):
         raw = audio_val.read()
         if raw:
             ahash = hashlib.md5(raw).hexdigest()
-            if ahash != st.session_state.get("last_audio_hash",""):
-                st.session_state["last_audio_hash"] = ahash
+            turn_hash_key = f"hash_{mic_key}"
+            if ahash != st.session_state.get(turn_hash_key, ""):
+                # Lock immediately to prevent any re-entry
+                st.session_state["processing_lock"] = True
+                st.session_state[turn_hash_key]      = ahash
 
                 with st.spinner(""):
                     try:
                         spoken = stt(raw, lang)
                     except Exception as e:
                         st.error(f"Transcription failed — please try again. ({e})")
-                        st.session_state["last_audio_hash"] = ""
+                        st.session_state["processing_lock"] = False
                         st.rerun(); return
 
-                    if not spoken.strip():
-                        st.rerun(); return
+                    if spoken.strip():
+                        msgs.append({"role":"user",      "content":spoken})
+                        reply = customer_reply(p, msgs, lang)
+                        msgs.append({"role":"assistant", "content":reply})
+                        audio_out = tts_b64(reply, lang, pid)
 
-                    msgs.append({"role":"user",      "content":spoken})
-                    reply = customer_reply(p, msgs, lang)
-                    msgs.append({"role":"assistant", "content":reply})
-
-                    # Update ALL display state atomically before rerun
-                    st.session_state["messages"]      = msgs
-                    st.session_state["display_msg"]   = reply   # new bubble
-                    st.session_state["pending_audio"] = tts_b64(reply, lang, pid)
-                    st.session_state["audio_played"]  = False
-                    st.session_state["last_audio_hash"] = ""
-                    st.rerun()
-
-
+                        # Write all state atomically
+                        st.session_state["messages"]        = msgs
+                        st.session_state["display_msg"]     = reply
+                        st.session_state["pending_audio"]   = audio_out
+                        st.session_state["audio_played"]    = False
+                        st.session_state["processing_lock"] = False
+                        st.rerun()
+                    else:
+                        st.session_state["processing_lock"] = False
+                        st.rerun()
 
 
 def screen_scoring():
@@ -843,10 +855,10 @@ def screen_debrief():
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Practice Again →", use_container_width=True):
-        for k in ["messages","session_start","opening_done","pending_audio",
-                  "last_audio_hash","processing","last_scores","last_points",
-                  "session_lang","selected_profile","display_msg","audio_played"]:
-            if k in st.session_state: del st.session_state[k]
+        # Clear session keys, keep agent identity
+        for k in list(st.session_state.keys()):
+            if k not in ("agent_name","total_points","screen"):
+                del st.session_state[k]
         sset("screen","pick_profile"); st.rerun()
 
     st.markdown('<p style="text-align:center;margin-top:.6rem">', unsafe_allow_html=True)
