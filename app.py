@@ -353,6 +353,112 @@ def fmt_time(s):
     m, sec = divmod(max(0, int(s)), 60)
     return f"{m}:{sec:02d}"
 
+# ── Mic CSS — hides extra controls, styles the button as a clean orange circle ─
+# Works on Chrome, Firefox, Safari (desktop + mobile)
+# For iOS Safari iframe mic: we inject allow="microphone" onto Streamlit iframes
+MIC_CSS = """
+<style>
+/* ── Inject allow=microphone onto all iframes (fixes iOS Safari) ── */
+</style>
+<script>
+(function(){
+  // Add allow="microphone" to every iframe Streamlit creates
+  // iOS Safari requires this attribute for getUserMedia inside iframes
+  function patchIframes(){
+    document.querySelectorAll('iframe').forEach(function(f){
+      if(!f.getAttribute('allow') || !f.getAttribute('allow').includes('microphone')){
+        f.setAttribute('allow','microphone;camera;autoplay');
+      }
+    });
+  }
+  patchIframes();
+  // Re-run when DOM changes (Streamlit adds iframes dynamically)
+  new MutationObserver(patchIframes).observe(document.body,{childList:true,subtree:true});
+})();
+</script>
+<style>
+/* wrapper centred */
+div[data-testid="stAudioInput"]{
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:center !important;
+    justify-content:center !important;
+    width:100% !important;
+    padding:0 !important;
+    background:transparent !important;
+    border:none !important;
+    box-shadow:none !important;
+    margin:.6rem 0 .3rem !important;
+}
+div[data-testid="stAudioInput"]>div{
+    background:transparent !important;
+    border:none !important;
+    box-shadow:none !important;
+    padding:0 !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    flex-direction:column !important;
+}
+/* hide label, hint text, waveform, audio player, download */
+div[data-testid="stAudioInput"] label,
+div[data-testid="stAudioInput"] small,
+div[data-testid="stAudioInput"] p,
+div[data-testid="stAudioInput"] audio,
+div[data-testid="stAudioInput"] [data-testid="stAudioPlayer"],
+div[data-testid="stAudioInput"] [data-testid="stBaseButton-secondary"]
+{ display:none !important; }
+/* keep only the first button (record/stop) */
+div[data-testid="stAudioInput"] button:not(:first-of-type){ display:none !important; }
+/* style the record button */
+div[data-testid="stAudioInput"] button:first-of-type{
+    width:84px !important; height:84px !important;
+    border-radius:50% !important;
+    background:#E8521A !important;
+    border:none !important; cursor:pointer !important;
+    box-shadow:0 6px 26px rgba(232,82,26,.42) !important;
+    display:flex !important; align-items:center !important;
+    justify-content:center !important;
+    transition:transform .12s,background .15s !important;
+    -webkit-tap-highlight-color:transparent !important;
+    touch-action:manipulation !important;
+    outline:none !important;
+}
+div[data-testid="stAudioInput"] button:first-of-type:active{ transform:scale(.93) !important; }
+div[data-testid="stAudioInput"] button:first-of-type svg{
+    width:32px !important; height:32px !important;
+    stroke:#fff !important; color:#fff !important; fill:none !important;
+}
+/* pulse while recording */
+div[data-testid="stAudioInput"] button[title*="Stop"]:first-of-type,
+div[data-testid="stAudioInput"] button[aria-label*="Stop"]:first-of-type{
+    background:#B02A08 !important;
+    animation:mpulse 1.1s infinite !important;
+}
+@keyframes mpulse{
+    0%,100%{box-shadow:0 4px 20px rgba(176,42,8,.5);}
+    50%{box-shadow:0 4px 44px rgba(176,42,8,.88);}
+}
+</style>
+"""
+
+# ── helpers ─────────────────────────────────────────────────────────────────────
+def ss(k, d=None):  return st.session_state.get(k, d)
+def sset(k, v):     st.session_state[k] = v
+
+def topbar(right=""):
+    pts = ss("total_points", 0)
+    r   = right or (f"⭐ {pts} pts" if ss("agent_name") else "")
+    st.markdown(
+        f'<div class="topbar">'
+        f'<span class="brand">🕌 Mansam Sales Coach</span>'
+        f'<span class="pts">{r}</span></div>',
+        unsafe_allow_html=True)
+
+def fmt_time(s):
+    m, sec = divmod(max(0, int(s)), 60)
+    return f"{m}:{sec:02d}"
+
 # ── iOS-compatible recorder ───────────────────────────────────────────────────
 # st.audio_input runs inside a Streamlit iframe — iOS Safari blocks mic in iframes.
 # Solution: inject JS at the TOP-LEVEL page that requests mic directly,
@@ -778,36 +884,19 @@ def screen_session():
         f'{hint_txt}</p>',
         unsafe_allow_html=True)
 
-    # ── inject JS recorder (iOS-compatible top-level mic access) ────────────────
-    st.markdown(MIC_JS, unsafe_allow_html=True)
+    # ── mic CSS (hides extra controls, patches iOS iframe) ──────────────────────
+    st.markdown(MIC_CSS, unsafe_allow_html=True)
 
-    # ── mic button (pure HTML, styled orange circle) ───────────────────────────
-    st.markdown(MIC_BUTTON_HTML, unsafe_allow_html=True)
-
-    # ── hidden text input bridge — JS writes base64 audio here ────────────────
-    # Wrapped in a div we can hide with CSS
-    st.markdown('<div class="mic-bridge-container">', unsafe_allow_html=True)
-    bridge_val = st.text_input("__mic_bridge__", value="",
-                               key=f"mic_bridge_{sp_turns}",
-                               label_visibility="visible")
-    st.markdown('</div>', unsafe_allow_html=True)
-    # Hide bridge via JS (CSS :has() with dynamic text not reliable cross-browser)
-    st.markdown("""<script>
-    (function(){
-      var ls=document.querySelectorAll('label[data-testid="stWidgetLabel"]');
-      ls.forEach(function(l){
-        if(l.textContent.trim()==='__mic_bridge__'){
-          var c=l.closest('[data-testid="stTextInput"]');
-          if(c){c.style.cssText='position:absolute;opacity:0;pointer-events:none;'
-            +'height:1px;overflow:hidden;top:-9999px;left:-9999px';}
-        }
-      });
-    })();
-    </script>""", unsafe_allow_html=True)
+    # ── mic button via st.audio_input ────────────────────────────────────────
+    # key = f"mic_{sp_turns}" — changes each turn so widget fully resets,
+    # preventing re-reading of the previous recording.
+    mic_key   = f"mic_{sp_turns}"
+    audio_val = st.audio_input("Record", key=mic_key,
+                               label_visibility="collapsed")
 
     # ── done button ───────────────────────────────────────────────────────────
     st.markdown(
-        '<p style="text-align:center;margin-top:.4rem;font-size:.8rem;color:#C0C0C0">or</p>',
+        '<p style="text-align:center;margin-top:.5rem;font-size:.8rem;color:#C0C0C0">or</p>',
         unsafe_allow_html=True)
     if st.button("Done — get my feedback", key="done_btn", use_container_width=True):
         if sp_turns >= 1:
@@ -816,45 +905,38 @@ def screen_session():
             st.toast("Have at least one exchange first 💪")
         return
 
-    # ── process audio from bridge ─────────────────────────────────────────────
-    # bridge_val contains base64 audio written by JS after recording stops
-    if (bridge_val
-            and len(bridge_val) > 100
-            and not st.session_state.get("processing_lock")):
+    # ── process new recording ─────────────────────────────────────────────────
+    if audio_val is not None and not st.session_state.get("processing_lock"):
+        raw = audio_val.read()
+        if raw:
+            ahash = hashlib.md5(raw).hexdigest()
+            turn_key = f"hash_{mic_key}"
+            if ahash != st.session_state.get(turn_key, ""):
+                st.session_state["processing_lock"] = True
+                st.session_state[turn_key]           = ahash
 
-        ahash = hashlib.md5(bridge_val.encode()).hexdigest()
-        turn_hash_key = f"hash_t{sp_turns}"
+                with st.spinner(""):
+                    try:
+                        spoken = stt(raw, lang)
+                    except Exception as e:
+                        st.error(f"Transcription failed — please try again. ({e})")
+                        st.session_state["processing_lock"] = False
+                        st.rerun(); return
 
-        if ahash != st.session_state.get(turn_hash_key, ""):
-            st.session_state["processing_lock"] = True
-            st.session_state[turn_hash_key]      = ahash
-
-            with st.spinner(""):
-                try:
-                    raw_bytes = base64.b64decode(bridge_val)
-                    spoken    = stt(raw_bytes, lang)
-                except Exception as e:
-                    st.error(f"Transcription failed — please try again. ({e})")
-                    st.session_state["processing_lock"] = False
-                    st.rerun(); return
-
-                if spoken.strip():
-                    msgs.append({"role":"user",      "content": spoken})
-                    reply = customer_reply(p, msgs, lang)
-                    msgs.append({"role":"assistant", "content": reply})
-                    audio_out = tts_b64(reply, lang, pid)
-
-                    st.session_state["messages"]        = msgs
-                    st.session_state["display_msg"]     = reply
-                    st.session_state["pending_audio"]   = audio_out
-                    st.session_state["audio_played"]    = False
-                    st.session_state["processing_lock"] = False
-                    st.rerun()
-                else:
-                    st.session_state["processing_lock"] = False
-                    st.rerun()
-
-
+                    if spoken.strip():
+                        msgs.append({"role": "user",      "content": spoken})
+                        reply = customer_reply(p, msgs, lang)
+                        msgs.append({"role": "assistant", "content": reply})
+                        audio_out = tts_b64(reply, lang, pid)
+                        st.session_state["messages"]        = msgs
+                        st.session_state["display_msg"]     = reply
+                        st.session_state["pending_audio"]   = audio_out
+                        st.session_state["audio_played"]    = False
+                        st.session_state["processing_lock"] = False
+                        st.rerun()
+                    else:
+                        st.session_state["processing_lock"] = False
+                        st.rerun()
 def screen_scoring():
     topbar()
     st.markdown("<br>", unsafe_allow_html=True)
