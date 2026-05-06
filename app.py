@@ -39,7 +39,7 @@ html,body,[class*="css"],.stApp{
 }
 .block-container{
     max-width:480px !important;
-    padding:0 1.1rem 2rem !important;
+    padding:0 1.1rem 5rem !important;
     margin:0 auto !important;
 }
 #MainMenu,footer,header,
@@ -59,6 +59,15 @@ div[data-testid="stStatusWidget"]{display:none !important;}
     font-size:.95rem !important;min-height:52px !important;width:100% !important;
 }
 .stButton>button:hover{background:#333 !important;}
+/* done-link: small subtle text link, not a big button */
+.done-link .stButton>button{
+    background:transparent !important;color:#B0B0B0 !important;
+    border:none !important;box-shadow:none !important;
+    font-size:.8rem !important;min-height:32px !important;
+    font-weight:400 !important;text-decoration:underline !important;
+    width:auto !important;padding:0 !important;
+}
+.done-link .stButton>button:hover{background:transparent !important;color:#888 !important;}
 .topbar{display:flex;align-items:center;justify-content:space-between;
         padding:.9rem 0 .6rem;border-bottom:1px solid #E8E8E8;margin-bottom:1.2rem;}
 .topbar .brand{font-size:.88rem;font-weight:600;color:#1A1A1A;}
@@ -874,31 +883,25 @@ def screen_session():
                 f'<source src="data:audio/mp3;base64,{pending}" type="audio/mp3"></audio>',
                 unsafe_allow_html=True)
 
-    # ── hint ──────────────────────────────────────────────────────────────────
-    hint_txt = (
-        ("اضغط للرد" if is_rtl else "Tap to respond")
-    )
+    # ── hint text ─────────────────────────────────────────────────────────────
+    hint_txt = "اضغط للرد" if is_rtl else "TAP TO RESPOND"
     st.markdown(
-        f'<p style="text-align:center;font-size:.75rem;color:#B0B0B0;'
-        f'letter-spacing:.04em;text-transform:uppercase;margin:0 0 .4rem">'
-        f'{hint_txt}</p>',
+        f'<p style="text-align:center;font-size:.72rem;color:#C0C0C0;'
+        f'letter-spacing:.1em;font-weight:500;margin:.4rem 0 0">{hint_txt}</p>',
         unsafe_allow_html=True)
 
-    # ── mic CSS (hides extra controls, patches iOS iframe) ──────────────────────
+    # ── mic CSS + button ──────────────────────────────────────────────────────
     st.markdown(MIC_CSS, unsafe_allow_html=True)
-
-    # ── mic button via st.audio_input ────────────────────────────────────────
-    # key = f"mic_{sp_turns}" — changes each turn so widget fully resets,
-    # preventing re-reading of the previous recording.
     mic_key   = f"mic_{sp_turns}"
     audio_val = st.audio_input("Record", key=mic_key,
                                label_visibility="collapsed")
 
-    # ── done button ───────────────────────────────────────────────────────────
-    st.markdown(
-        '<p style="text-align:center;margin-top:.5rem;font-size:.8rem;color:#C0C0C0">or</p>',
-        unsafe_allow_html=True)
-    if st.button("Done — get my feedback", key="done_btn", use_container_width=True):
+    # ── done: small subtle link, not a full button ────────────────────────────
+    st.markdown('<div class="done-link" style="text-align:center;margin-top:.2rem">',
+                unsafe_allow_html=True)
+    done_clicked = st.button("Done — get feedback", key="done_btn")
+    st.markdown('</div>', unsafe_allow_html=True)
+    if done_clicked:
         if sp_turns >= 1:
             sset("screen","scoring"); st.rerun(); return
         else:
