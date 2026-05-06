@@ -353,81 +353,190 @@ def fmt_time(s):
     m, sec = divmod(max(0, int(s)), 60)
     return f"{m}:{sec:02d}"
 
-# ── Mic button CSS injected into session screen ───────────────────────────────
-# Hides ALL native audio_input controls except the core record button.
-# Uses attribute selectors that work regardless of Streamlit's internal HTML structure.
-MIC_CSS = """
+# ── iOS-compatible recorder ───────────────────────────────────────────────────
+# st.audio_input runs inside a Streamlit iframe — iOS Safari blocks mic in iframes.
+# Solution: inject JS at the TOP-LEVEL page that requests mic directly,
+# encodes the recording as base64, and writes it into a hidden Streamlit text input.
+# Python reads the text input value on the next rerun.
+#
+# The hidden text input is identified by a data-testid we assign via a unique label.
+# We use JS to find the input by its sibling label text and write to it.
+
+MIC_JS = """
+<script>
+(function() {
+  // Only inject once per page load
+  if (window.__mansamMicInjected) return;
+  window.__mansamMicInjected = true;
+
+  var mediaRecorder, stream, chunks = [], isRecording = false;
+
+  // Find the hidden Streamlit text input by its label
+  function getInput() {
+    var labels = document.querySelectorAll('label[data-testid="stWidgetLabel"]');
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i].textContent.trim() === '__mic_bridge__') {
+        var container = labels[i].closest('[data-testid="stTextInput"]');
+        if (container) return container.querySelector('input');
+      }
+    }
+    return null;
+  }
+
+  // Write base64 audio to the hidden input and trigger Streamlit rerun
+  function submitAudio(b64) {
+    var inp = getInput();
+    if (!inp) { console.warn('Mansam: mic bridge input not found'); return; }
+    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeInputValueSetter.call(inp, b64);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  async function startRecording() {
+    try {
+      // iOS Safari requires exact constraints
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 16000
+        }
+      });
+    } catch (e) {
+      alert('Microphone access denied. Please allow mic in Safari Settings → Websites → Microphone.');
+      return false;
+    }
+
+    // iOS Safari supports audio/mp4 not webm
+    var mime = '';
+    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+      mime = 'audio/webm;codecs=opus';
+    } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+      mime = 'audio/mp4';
+    } else {
+      mime = 'audio/aac';
+    }
+
+    chunks = [];
+    mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    mediaRecorder.ondataavailable = function(e) {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    mediaRecorder.onstop = function() {
+      stream.getTracks().forEach(function(t) { t.stop(); });
+      var blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      var reader = new FileReader();
+      reader.onloadend = function() {
+        var b64 = reader.result.split(',')[1];
+        if (b64 && b64.length > 100) {
+          updateBtn('processing');
+          submitAudio(b64);
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+    mediaRecorder.start(100);
+    return true;
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+  }
+
+  function updateBtn(state) {
+    var btn = document.getElementById('__mansam_mic_btn__');
+    if (!btn) return;
+    var hint = document.getElementById('__mansam_mic_hint__');
+    if (state === 'idle') {
+      btn.style.background = '#E8521A';
+      btn.style.animation  = '';
+      btn.style.boxShadow  = '0 6px 26px rgba(232,82,26,.42)';
+      if (hint) hint.textContent = 'Tap to respond';
+    } else if (state === 'recording') {
+      btn.style.background = '#B02A08';
+      btn.style.animation  = 'mpulse 1.1s infinite';
+      if (hint) hint.textContent = 'Tap to stop';
+    } else if (state === 'processing') {
+      btn.style.background = '#888';
+      btn.style.animation  = '';
+      if (hint) hint.textContent = 'Processing…';
+    }
+  }
+
+  // Poll for the button — it may not exist yet when this script first runs
+  function attachBtn() {
+    var btn = document.getElementById('__mansam_mic_btn__');
+    if (!btn) { setTimeout(attachBtn, 200); return; }
+    if (btn.__mansamAttached) return;
+    btn.__mansamAttached = true;
+
+    btn.addEventListener('click', async function() {
+      if (btn.style.background === 'rgb(136, 136, 136)') return; // processing
+
+      if (!isRecording) {
+        var ok = await startRecording();
+        if (ok) { isRecording = true; updateBtn('recording'); }
+      } else {
+        isRecording = false;
+        updateBtn('idle');
+        stopRecording();
+      }
+    });
+  }
+
+  // Start polling
+  setTimeout(attachBtn, 300);
+})();
+</script>
+
 <style>
-/* wrapper: full-width flex centre */
-div[data-testid="stAudioInput"]{
-    display:flex !important;
-    flex-direction:column !important;
-    align-items:center !important;
-    justify-content:center !important;
-    width:100% !important;
-    padding:0 !important;
-    background:transparent !important;
-    border:none !important;
-    box-shadow:none !important;
-    margin:.5rem 0 .3rem !important;
+@keyframes mpulse {
+  0%,100% { box-shadow: 0 4px 20px rgba(176,42,8,.5); }
+  50%      { box-shadow: 0 4px 44px rgba(176,42,8,.88); }
 }
-div[data-testid="stAudioInput"] > div {
-    background:transparent !important;
-    border:none !important;
-    box-shadow:none !important;
-    padding:0 !important;
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
+/* hide the text input bridge completely */
+div[data-testid="stTextInput"]:has(label[data-testid="stWidgetLabel"]) {
+  /* We can't use :has() with dynamic text in CSS, hide via JS below */
 }
-/* hide EVERYTHING except the main record/stop button */
-div[data-testid="stAudioInput"] label { display:none !important; }
-div[data-testid="stAudioInput"] small { display:none !important; }
-div[data-testid="stAudioInput"] p     { display:none !important; }
-/* hide the waveform / audio player that appears after recording */
-div[data-testid="stAudioInput"] audio  { display:none !important; }
-div[data-testid="stAudioInput"] [data-testid="stAudioPlayer"] { display:none !important; }
-/* hide download and any secondary buttons - keep only the FIRST button */
-div[data-testid="stAudioInput"] button:not(:first-of-type){ display:none !important; }
-/* style the main button */
-div[data-testid="stAudioInput"] button:first-of-type {
-    width:84px !important;
-    height:84px !important;
-    border-radius:50% !important;
-    background:#E8521A !important;
-    border:none !important;
-    cursor:pointer !important;
-    box-shadow:0 6px 26px rgba(232,82,26,.42) !important;
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    transition:transform .1s, background .15s !important;
-    -webkit-tap-highlight-color:transparent !important;
-    touch-action:manipulation !important;
-}
-div[data-testid="stAudioInput"] button:first-of-type:hover {
-    transform:scale(1.06) !important;
-}
-div[data-testid="stAudioInput"] button:first-of-type:active {
-    transform:scale(.93) !important;
-}
-div[data-testid="stAudioInput"] button:first-of-type svg {
-    width:32px !important;
-    height:32px !important;
-    stroke:#fff !important;
-    color:#fff !important;
-    fill:none !important;
-}
-/* pulse red while recording (stop button state) */
-div[data-testid="stAudioInput"] button[title="Stop recording"]:first-of-type,
-div[data-testid="stAudioInput"] button[aria-label="Stop recording"]:first-of-type {
-    background:#B02A08 !important;
-    animation:mpulse 1.1s infinite !important;
-}
-@keyframes mpulse{
-    0%,100%{box-shadow:0 4px 20px rgba(176,42,8,.5);}
-    50%{box-shadow:0 4px 44px rgba(176,42,8,.88);}
-}
+</style>
+"""
+
+MIC_BUTTON_HTML = """
+<div style="display:flex;flex-direction:column;align-items:center;
+            margin:.8rem 0 .4rem;width:100%">
+  <button id="__mansam_mic_btn__"
+    style="width:84px;height:84px;border-radius:50%;
+           background:#E8521A;border:none;cursor:pointer;
+           box-shadow:0 6px 26px rgba(232,82,26,.42);
+           display:flex;align-items:center;justify-content:center;
+           -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+           transition:transform .1s;outline:none">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
+         stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3"/>
+      <path d="M5 10a7 7 0 0 0 14 0"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="8"  y1="22" x2="16" y2="22"/>
+    </svg>
+  </button>
+  <div id="__mansam_mic_hint__"
+       style="font-size:.74rem;color:#B0B0B0;margin-top:.55rem;
+              letter-spacing:.04em;text-transform:uppercase">
+    Tap to respond
+  </div>
+</div>
+"""
+
+# CSS to hide the bridge text input visually
+HIDE_BRIDGE_CSS = """
+<style>
+/* hide the mic bridge input — identified by a zero-width space label trick */
+.mic-bridge-container { position:absolute !important; opacity:0 !important;
+    pointer-events:none !important; height:1px !important; overflow:hidden !important;
+    top:-9999px !important; left:-9999px !important; }
 </style>
 """
 
@@ -669,17 +778,32 @@ def screen_session():
         f'{hint_txt}</p>',
         unsafe_allow_html=True)
 
-    # ── mic input ─────────────────────────────────────────────────────────────
-    # KEY DESIGN: key = "mic_{turn}" where turn = sp_turns.
-    # After we process a recording and append a user message, sp_turns increments,
-    # so the key changes and Streamlit creates a FRESH empty widget.
-    # This guarantees we never re-read the previous recording.
-    # We do NOT clear last_audio_hash between turns — the new key already ensures
-    # a fresh widget. last_audio_hash just guards within the same turn.
-    st.markdown(MIC_CSS, unsafe_allow_html=True)
-    mic_key   = f"mic_{sp_turns}"
-    audio_val = st.audio_input("Record", key=mic_key,
-                               label_visibility="collapsed")
+    # ── inject JS recorder (iOS-compatible top-level mic access) ────────────────
+    st.markdown(MIC_JS, unsafe_allow_html=True)
+
+    # ── mic button (pure HTML, styled orange circle) ───────────────────────────
+    st.markdown(MIC_BUTTON_HTML, unsafe_allow_html=True)
+
+    # ── hidden text input bridge — JS writes base64 audio here ────────────────
+    # Wrapped in a div we can hide with CSS
+    st.markdown('<div class="mic-bridge-container">', unsafe_allow_html=True)
+    bridge_val = st.text_input("__mic_bridge__", value="",
+                               key=f"mic_bridge_{sp_turns}",
+                               label_visibility="visible")
+    st.markdown('</div>', unsafe_allow_html=True)
+    # Hide bridge via JS (CSS :has() with dynamic text not reliable cross-browser)
+    st.markdown("""<script>
+    (function(){
+      var ls=document.querySelectorAll('label[data-testid="stWidgetLabel"]');
+      ls.forEach(function(l){
+        if(l.textContent.trim()==='__mic_bridge__'){
+          var c=l.closest('[data-testid="stTextInput"]');
+          if(c){c.style.cssText='position:absolute;opacity:0;pointer-events:none;'
+            +'height:1px;overflow:hidden;top:-9999px;left:-9999px';}
+        }
+      });
+    })();
+    </script>""", unsafe_allow_html=True)
 
     # ── done button ───────────────────────────────────────────────────────────
     st.markdown(
@@ -692,44 +816,43 @@ def screen_session():
             st.toast("Have at least one exchange first 💪")
         return
 
-    # ── process recording ─────────────────────────────────────────────────────
-    # Guard 1: widget must have data
-    # Guard 2: hash must differ from last processed (within this turn)
-    # Guard 3: not currently locked (prevents double-fire on fast reruns)
-    if audio_val is not None and not st.session_state.get("processing_lock"):
-        raw = audio_val.read()
-        if raw:
-            ahash = hashlib.md5(raw).hexdigest()
-            turn_hash_key = f"hash_{mic_key}"
-            if ahash != st.session_state.get(turn_hash_key, ""):
-                # Lock immediately to prevent any re-entry
-                st.session_state["processing_lock"] = True
-                st.session_state[turn_hash_key]      = ahash
+    # ── process audio from bridge ─────────────────────────────────────────────
+    # bridge_val contains base64 audio written by JS after recording stops
+    if (bridge_val
+            and len(bridge_val) > 100
+            and not st.session_state.get("processing_lock")):
 
-                with st.spinner(""):
-                    try:
-                        spoken = stt(raw, lang)
-                    except Exception as e:
-                        st.error(f"Transcription failed — please try again. ({e})")
-                        st.session_state["processing_lock"] = False
-                        st.rerun(); return
+        ahash = hashlib.md5(bridge_val.encode()).hexdigest()
+        turn_hash_key = f"hash_t{sp_turns}"
 
-                    if spoken.strip():
-                        msgs.append({"role":"user",      "content":spoken})
-                        reply = customer_reply(p, msgs, lang)
-                        msgs.append({"role":"assistant", "content":reply})
-                        audio_out = tts_b64(reply, lang, pid)
+        if ahash != st.session_state.get(turn_hash_key, ""):
+            st.session_state["processing_lock"] = True
+            st.session_state[turn_hash_key]      = ahash
 
-                        # Write all state atomically
-                        st.session_state["messages"]        = msgs
-                        st.session_state["display_msg"]     = reply
-                        st.session_state["pending_audio"]   = audio_out
-                        st.session_state["audio_played"]    = False
-                        st.session_state["processing_lock"] = False
-                        st.rerun()
-                    else:
-                        st.session_state["processing_lock"] = False
-                        st.rerun()
+            with st.spinner(""):
+                try:
+                    raw_bytes = base64.b64decode(bridge_val)
+                    spoken    = stt(raw_bytes, lang)
+                except Exception as e:
+                    st.error(f"Transcription failed — please try again. ({e})")
+                    st.session_state["processing_lock"] = False
+                    st.rerun(); return
+
+                if spoken.strip():
+                    msgs.append({"role":"user",      "content": spoken})
+                    reply = customer_reply(p, msgs, lang)
+                    msgs.append({"role":"assistant", "content": reply})
+                    audio_out = tts_b64(reply, lang, pid)
+
+                    st.session_state["messages"]        = msgs
+                    st.session_state["display_msg"]     = reply
+                    st.session_state["pending_audio"]   = audio_out
+                    st.session_state["audio_played"]    = False
+                    st.session_state["processing_lock"] = False
+                    st.rerun()
+                else:
+                    st.session_state["processing_lock"] = False
+                    st.rerun()
 
 
 def screen_scoring():
