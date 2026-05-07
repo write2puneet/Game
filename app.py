@@ -1,14 +1,15 @@
 """
-Mansam Sales Coach v4 — Stable
+Mansam Sales Coach v5 — Clean
 ================================
-Key changes from v3:
-- Replaced st.audio_input (buggy, shows play/stop/download) with a clean
-  custom HTML5 recorder component via st.components.v1.html
-- Session state is iron-clad: every key checked with 'in' not .get()
-- Single mic button, no extra controls visible
-- Question bubble never flickers (only updates after full round-trip)
+Full rewrite from scratch. All previous fixes consolidated.
+- iOS Safari mic: MutationObserver patches iframe allow="microphone"
+- Mic button: fully visible, centred, 88px orange circle
+- No duplicate CSS/JS blocks
+- Stable display_msg snapshot (no flickering question)
+- Turn-based mic key (no double-processing)
+- Processing lock (no re-entry)
 
-Groq secret:  GROQ_API_KEY = "gsk_..."
+Groq secret: GROQ_API_KEY = "gsk_..."
 """
 
 import os, io, json, base64, time, hashlib
@@ -21,6 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Mansam Sales Coach",
     page_icon="🕌",
@@ -28,67 +30,165 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── global styles ──────────────────────────────────────────────────────────────
+# ── global CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
-html,body,[class*="css"],.stApp{
+
+html,body,[class*="css"],.stApp {
     background:#F5F5F5 !important;
     color:#1A1A1A !important;
     font-family:'Inter',-apple-system,sans-serif !important;
 }
-.block-container{
+.block-container {
     max-width:480px !important;
-    padding:0 1.1rem 5rem !important;
+    padding:0 1.1rem 6rem !important;
     margin:0 auto !important;
 }
 #MainMenu,footer,header,
 div[data-testid="stToolbar"],
 div[data-testid="stDecoration"],
-div[data-testid="stStatusWidget"]{display:none !important;}
-.stTextInput input{
-    background:#fff !important;color:#1A1A1A !important;
-    border:1.5px solid #E0E0E0 !important;border-radius:14px !important;
-    font-size:16px !important;padding:.85rem 1rem !important;
+div[data-testid="stStatusWidget"] { display:none !important; }
+
+/* text inputs */
+.stTextInput input {
+    background:#fff !important; color:#1A1A1A !important;
+    border:1.5px solid #E0E0E0 !important; border-radius:14px !important;
+    font-size:16px !important; padding:.85rem 1rem !important;
 }
-.stTextInput input::placeholder{color:#B0B0B0 !important;}
-.stButton>button{
-    background:#1A1A1A !important;color:#fff !important;
-    border:none !important;border-radius:14px !important;
-    font-family:'Inter',sans-serif !important;font-weight:500 !important;
-    font-size:.95rem !important;min-height:52px !important;width:100% !important;
+.stTextInput input::placeholder { color:#B0B0B0 !important; }
+
+/* primary buttons */
+.stButton>button {
+    background:#1A1A1A !important; color:#fff !important;
+    border:none !important; border-radius:14px !important;
+    font-family:'Inter',sans-serif !important; font-weight:500 !important;
+    font-size:.95rem !important; min-height:52px !important; width:100% !important;
 }
-.stButton>button:hover{background:#333 !important;}
-/* done-link: small subtle text link, not a big button */
-.done-link .stButton>button{
-    background:transparent !important;color:#B0B0B0 !important;
-    border:none !important;box-shadow:none !important;
-    font-size:.8rem !important;min-height:32px !important;
-    font-weight:400 !important;text-decoration:underline !important;
-    width:auto !important;padding:0 !important;
+.stButton>button:hover { background:#333 !important; }
+
+/* done-link: tiny subtle text under mic */
+.done-link .stButton>button {
+    background:transparent !important; color:#B0B0B0 !important;
+    border:none !important; box-shadow:none !important;
+    font-size:.78rem !important; min-height:28px !important;
+    font-weight:400 !important; text-decoration:underline !important;
+    width:auto !important; padding:0 !important;
 }
-.done-link .stButton>button:hover{background:transparent !important;color:#888 !important;}
-.topbar{display:flex;align-items:center;justify-content:space-between;
-        padding:.9rem 0 .6rem;border-bottom:1px solid #E8E8E8;margin-bottom:1.2rem;}
-.topbar .brand{font-size:.88rem;font-weight:600;color:#1A1A1A;}
-.topbar .pts{font-size:.8rem;color:#888;}
-.card{background:#fff;border-radius:14px;padding:1.2rem 1.3rem;
-      margin-bottom:.8rem;box-shadow:0 1px 6px rgba(0,0,0,.06);}
-.card-dark{background:#1A1A1A;border-radius:14px;padding:1.3rem 1.4rem;margin-bottom:.8rem;}
-.score-pair{display:flex;gap:.8rem;margin-bottom:.9rem;}
-.score-card{flex:1;background:#fff;border-radius:14px;padding:1rem .8rem;
-            text-align:center;box-shadow:0 1px 6px rgba(0,0,0,.06);}
-.score-card .num{font-size:2rem;font-weight:700;color:#1A1A1A;line-height:1;}
-.score-card .lbl{font-size:.7rem;color:#B0B0B0;text-transform:uppercase;letter-spacing:.08em;margin-top:.3rem;}
-.score-card .just{font-size:.72rem;color:#888;margin-top:.3rem;line-height:1.4;}
-.chip{display:inline-block;background:#FBF6E9;color:#8B6914;
-      border-radius:20px;padding:4px 11px;font-size:.76rem;font-weight:500;margin:2px;}
-.grow-item{background:#fff;border-left:3px solid #E0E0E0;border-radius:0 10px 10px 0;
-           padding:.8rem 1rem;margin:.3rem 0;font-size:.87rem;line-height:1.55;}
-.grow-item .try{margin-top:.3rem;font-style:italic;color:#C9A84C;font-size:.84rem;}
-.div{border:none;border-top:1px solid #EBEBEB;margin:1rem 0;}
-audio{width:100%;height:34px;border-radius:8px;margin:.3rem 0;accent-color:#C9A84C;}
+.done-link .stButton>button:hover {
+    background:transparent !important; color:#888 !important;
+}
+
+/* ── MIC BUTTON: centred large orange circle ── */
+/* iOS Safari: iframes need allow=microphone — patched via JS below */
+div[data-testid="stAudioInput"] {
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:center !important;
+    justify-content:center !important;
+    width:100% !important;
+    padding:0 0 .5rem 0 !important;
+    background:transparent !important;
+    border:none !important;
+    box-shadow:none !important;
+    overflow:visible !important;
+}
+div[data-testid="stAudioInput"] > div {
+    background:transparent !important;
+    border:none !important;
+    box-shadow:none !important;
+    padding:0 !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    overflow:visible !important;
+}
+/* hide everything except the record button */
+div[data-testid="stAudioInput"] label { display:none !important; }
+div[data-testid="stAudioInput"] small { display:none !important; }
+div[data-testid="stAudioInput"] p     { display:none !important; }
+div[data-testid="stAudioInput"] audio { display:none !important; }
+div[data-testid="stAudioInput"] [data-testid="stAudioPlayer"]      { display:none !important; }
+div[data-testid="stAudioInput"] [data-testid="stBaseButton-secondary"] { display:none !important; }
+div[data-testid="stAudioInput"] button:not(:first-of-type)         { display:none !important; }
+
+/* the mic circle */
+div[data-testid="stAudioInput"] button:first-of-type {
+    width:88px !important;
+    height:88px !important;
+    border-radius:50% !important;
+    background:#E8521A !important;
+    border:none !important;
+    cursor:pointer !important;
+    box-shadow:0 6px 28px rgba(232,82,26,.45) !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    transition:transform .12s, background .15s !important;
+    -webkit-tap-highlight-color:transparent !important;
+    touch-action:manipulation !important;
+    outline:none !important;
+    flex-shrink:0 !important;
+    overflow:visible !important;
+}
+div[data-testid="stAudioInput"] button:first-of-type:active {
+    transform:scale(.92) !important;
+}
+div[data-testid="stAudioInput"] button:first-of-type svg {
+    width:34px !important; height:34px !important;
+    stroke:#fff !important; color:#fff !important; fill:none !important;
+}
+/* pulse red while recording */
+div[data-testid="stAudioInput"] button[title*="Stop"]:first-of-type,
+div[data-testid="stAudioInput"] button[aria-label*="Stop"]:first-of-type {
+    background:#B02A08 !important;
+    animation:mpulse 1.1s infinite !important;
+}
+@keyframes mpulse {
+    0%,100% { box-shadow:0 4px 20px rgba(176,42,8,.5); }
+    50%      { box-shadow:0 4px 48px rgba(176,42,8,.9); }
+}
+
+/* shared cards */
+.card      { background:#fff; border-radius:14px; padding:1.2rem 1.3rem;
+             margin-bottom:.8rem; box-shadow:0 1px 6px rgba(0,0,0,.06); }
+.card-dark { background:#1A1A1A; border-radius:14px;
+             padding:1.3rem 1.4rem; margin-bottom:.8rem; }
+.topbar    { display:flex; align-items:center; justify-content:space-between;
+             padding:.9rem 0 .6rem; border-bottom:1px solid #E8E8E8; margin-bottom:1.2rem; }
+.topbar .brand { font-size:.88rem; font-weight:600; color:#1A1A1A; }
+.topbar .pts   { font-size:.8rem; color:#888; }
+.score-pair    { display:flex; gap:.8rem; margin-bottom:.9rem; }
+.score-card    { flex:1; background:#fff; border-radius:14px; padding:1rem .8rem;
+                 text-align:center; box-shadow:0 1px 6px rgba(0,0,0,.06); }
+.score-card .num  { font-size:2rem; font-weight:700; color:#1A1A1A; line-height:1; }
+.score-card .lbl  { font-size:.7rem; color:#B0B0B0; text-transform:uppercase;
+                    letter-spacing:.08em; margin-top:.3rem; }
+.score-card .just { font-size:.72rem; color:#888; margin-top:.3rem; line-height:1.4; }
+.chip      { display:inline-block; background:#FBF6E9; color:#8B6914;
+             border-radius:20px; padding:4px 11px; font-size:.76rem; font-weight:500; margin:2px; }
+.grow-item { background:#fff; border-left:3px solid #E0E0E0; border-radius:0 10px 10px 0;
+             padding:.8rem 1rem; margin:.3rem 0; font-size:.87rem; line-height:1.55; }
+.grow-item .try { margin-top:.3rem; font-style:italic; color:#C9A84C; font-size:.84rem; }
+.div  { border:none; border-top:1px solid #EBEBEB; margin:1rem 0; }
+audio { width:100%; height:34px; border-radius:8px; margin:.3rem 0; accent-color:#C9A84C; }
 </style>
+
+<script>
+/* Patch all Streamlit iframes to allow microphone — required for iOS Safari */
+(function(){
+  function patch(){
+    document.querySelectorAll('iframe').forEach(function(f){
+      var a = f.getAttribute('allow') || '';
+      if(!a.includes('microphone')){
+        f.setAttribute('allow', a ? a+';microphone;autoplay' : 'microphone;autoplay');
+      }
+    });
+  }
+  patch();
+  new MutationObserver(patch).observe(document.body,{childList:true,subtree:true});
+})();
+</script>
 """, unsafe_allow_html=True)
 
 # ── constants ──────────────────────────────────────────────────────────────────
@@ -96,112 +196,81 @@ GROQ_MODEL   = "llama-3.3-70b-versatile"
 SESSION_SECS = 4 * 60
 
 MANSAM_KB = """
-MANSAM — Luxury Arabian Fragrance House. Four collections: Oud, Nayat, Qanun, Buzuq & Riqq.
+MANSAM — Luxury Arabian Fragrance House. Collections: Oud, Nayat, Qanun, Buzuq & Riqq.
 Brand voice: quiet nobility, heritage, craftsmanship, calm authority.
-Sales philosophy: storytelling > pushing. Discover the customer first, match emotion to bottle.
+Sales philosophy: storytelling > pushing. Discover first, match emotion to bottle.
 Never apologise for price. Anchor on heritage, rarity, emotional outcome.
 
-FULL SKU LIBRARY (20 EDPs):
+SKU LIBRARY:
+OUD: Hams Min Al Sahraa (Rose/Musk-Oud, "quiet nobility"), Naseem Al Ward (Bergamot/Rose, "graceful optimism"),
+     Qublat Ward (Bergamot/Rose/Oud, "romantic authority"), Shatha Biladi (Citrus/Oud, "pride of origin")
+NAYAT: Aala Taj Warda (Saffron/Rose, "passion"), Aala Sathi Al Qamar (White flowers/Musk, "joy"),
+       Fakhamat Al Warda (Rose/Soft woods, "royal elegance"), Hadeeth Al Rooh (Spices/Amber, "inner depth"),
+       Hamsa (Fruity/Patchouli, "warmth"), Sarhan (Saffron/Leather-Oud, "vision"),
+       Tahta Al Noujoum (Neroli/Orange blossom, "dreamy charm"), Min Ana (Oriental woods, "self-discovery"),
+       Horr Fi Al Riyah (Almond/Sandalwood, "freedom")
+QANUN: Safaa Al Nada (Bergamot/Sandalwood, "purity"), Mamlakati (Musk/Woods/Vanilla, "command"),
+       Al Hawa Ghallab (Saffron/Floral, "magnetism"), Al Shaghaf Al Ahmar (Spices/Rose, "passion")
+BUZUQ: Khatiiiir (Saffron/Leather/Oud, "power"), Amtar (Fruity/Patchouli, "optimism"),
+       Thawrat Al Ahasseess (Saffron/Oud-Incense, "intensity")
 
-OUD COLLECTION
-• Hams Min Al Sahraa — Men/family gifting. Rose/Floral/Musk-Oud. "Quiet nobility, inner depth."
-• Naseem Al Ward — Unisex top-seller. Bergamot/Rose-Jasmine/Soft woods. "Graceful optimism, charm."
-• Qublat Ward — Travel gifting. Bergamot/Rose/Oud. "Romantic authority, refined elegance."
-• Shatha Biladi — Winter, Saudi identity. Citrus/Floral/Oud. "Pride of origin, rooted identity."
+EMOTIONAL MAP: NOBILITY→Shatha Biladi/Hams, HAPPINESS→Tahta Al Noujoum/Naseem,
+PASSION→Thawrat/Khatiiiir/Qublat, DESIRE→Al Hawa Ghallab/Mamlakati, PRIDE→Sarhan/Min Ana
 
-NAYAT COLLECTION
-• Aala Taj Warda — Summer evenings. Saffron-Cinnamon/Rose/Warm spicy. "Passion, rise, grandeur."
-• Aala Sathi Al Qamar — Men gifting. White flowers/Musk-Sandalwood. "Joy, glow."
-• Fakhamat Al Warda — Women. Rose/Fresh florals/Soft woods. "Royal elegance, visible status."
-• Hadeeth Al Rooh — Women. Warm spices/Oriental woods/Amber. "Inner depth, soulfulness."
-• Hamsa — Women. Fruity/Patchouli/Sandalwood. "Warmth, social ease."
-• Sarhan — Men top-seller. Saffron/Leather-Oud/Deep woods. "Vision, pioneering spirit."
-• Tahta Al Noujoum — Women top-seller. Neroli/Orange blossom/Musk-rum. "Dreamy playful charm."
-• Min Ana — Travel gifting. Oriental woods/Warm spices. "Self-discovery, individuality."
-• Horr Fi Al Riyah — Women. Soft almond/Lily/Sandalwood-Amber. "Freedom, independence."
-
-QANUN COLLECTION
-• Safaa Al Nada — Men/family. Bergamot/Rose/Sandalwood. "Purity, calm clarity."
-• Mamlakati — Winter. Musk/Strong woods/Vanilla. "Ownership, command."
-• Al Hawa Ghallab — Women top-seller. Juniper-Saffron/Floral/Woody. "Magnetism, desire."
-• Al Shaghaf Al Ahmar — Expressive. Spices/Rose/Woody. "Passion, intensity."
-
-BUZUQ & RIQQ COLLECTION
-• Khatiiiir — Men hero. Saffron/Leather-Rose/Oud-Frankincense. "Power, danger, bold charisma."
-• Amtar — Women summer. Fruity/Patchouli/Sandalwood. "Fresh optimism, renewal."
-• Thawrat Al Ahasseess — Men top-seller. Saffron/Rose/Oud-Incense. "Emotional intensity, rebellion."
-
-EMOTIONAL MAP:
-NOBILITY  → Shatha Biladi, Hams Min Al Sahraa, Al Shaghaf Al Ahmar
-HAPPINESS → Tahta Al Noujoum, Naseem Al Ward
-PLEASURE  → Aala Taj Warda, Hadeeth Al Rooh, Fakhamat Al Warda
-PASSION   → Thawrat Al Ahasseess, Khatiiiir, Qublat Ward
-DESIRE    → Safaa Al Nada, Al Hawa Ghallab, Mamlakati
-PRIDE     → Sarhan, Min Ana
-
-SERVICE STANDARDS:
-- Warm greeting, no rushing
-- Ask "For yourself or a gift?" before recommending
-- Speak of notes as story, not chemistry
-- Never rush — silence while smelling is sacred
-- Close: "Shall I wrap this one for you, or try one more?"
+SERVICE: Warm greeting · Ask "for yourself or gift?" · Story before price · Never rush · Close gently
 """
 
 PROFILES = {
     1: {
-        "emoji": "🧔", "name": "First-Time Browser", "name_ar": "زائر لأول مرة",
-        "difficulty": 1,
-        "brief": "Curious, no perfume knowledge. Needs gentle guidance.",
-        "opening_en": "Hello… I've never bought an oud before. I was just walking past. Everything looks so expensive. Can you tell me what makes this different?",
-        "opening_ar": "السلام عليكم… ما اشتريت عود من قبل. كنت أمشي وشفت المحل. كل شي يبدو غالي. وش اللي يخلي هذا مختلف؟",
-        "persona": """You are a first-time browser in a luxury Arabian perfume boutique in Riyadh.
-Curious but intimidated by price and the unfamiliar world of oud.
-You know almost nothing about perfume notes.
-You warm up ONLY when the salesperson slows down, discovers what YOU like, and tells a story.
+        "emoji":"🧔", "name":"First-Time Browser", "name_ar":"زائر لأول مرة",
+        "difficulty":1, "brief":"Curious, no perfume knowledge. Needs gentle guidance.",
+        "opening_en":"Hello… I've never bought an oud before. I was just walking past and everything looks so expensive. Can you tell me what makes this different?",
+        "opening_ar":"السلام عليكم… ما اشتريت عود من قبل. كنت أمشي وشفت المحل. كل شي يبدو غالي. وش اللي يخلي هذا مختلف؟",
+        "persona":"""You are a first-time browser in a luxury Arabian perfume boutique in Riyadh.
+Curious but intimidated by price. You know nothing about perfume notes.
+You warm up ONLY when the salesperson slows down, discovers your mood, and tells a story.
 If they rush or dump information you say: "I think I need to come back later."
-Buy signal: confident recommendation of ONE bottle with a reason tied to your mood.
+Buy signal: confident recommendation of ONE bottle tied to your mood.
 Objections: "It's a lot of money", "Is it too strong?", "I won't know if I like it."
-Short natural sentences.""",
+Short natural sentences. Max 2 sentences per reply.""",
     },
     2: {
-        "emoji": "👩", "name": "Gift Shopper", "name_ar": "مشتري هدية",
-        "difficulty": 1,
-        "brief": "Sister's birthday this weekend. Indecisive. Needs confident direction.",
-        "opening_en": "I need a gift for my sister. Her birthday is this weekend. I honestly have no idea what she'd like. Help me — you pick something.",
-        "opening_ar": "أبغى هدية لأختي. عيد ميلادها هذا الأسبوع. والله ما عندي فكرة. أنت اختار لي شي.",
-        "persona": """You are shopping for your sister's birthday gift this weekend.
-You don't wear perfume yourself. Your sister is elegant, quiet, works in an office.
+        "emoji":"👩", "name":"Gift Shopper", "name_ar":"مشتري هدية",
+        "difficulty":1, "brief":"Sister's birthday this weekend. Indecisive. Needs confident direction.",
+        "opening_en":"I need a gift for my sister. Her birthday is this weekend. I honestly have no idea what she'd like. Help me — you pick something.",
+        "opening_ar":"أبغى هدية لأختي. عيد ميلادها هذا الأسبوع. والله ما عندي فكرة. أنت اختار لي شي.",
+        "persona":"""You are shopping for your sister's birthday gift this weekend.
+You don't wear perfume. Your sister is elegant, quiet, works in an office.
 You want the salesperson to TAKE CHARGE and reassure you.
-You get annoyed at too many vague questions without direction.
+You get annoyed at vague questions without direction.
 You love: "For a sister who is elegant and composed, most gift-givers choose X because..."
-Buy signal: they pick ONE bottle, justify in two sentences, mention wrapping.
-Objections: "What if she already has this?", "Is this too personal?", "Can it be returned?"
-Warm but in a hurry.""",
+Buy signal: ONE bottle, justified in two sentences, mention wrapping.
+Objections: "What if she has this?", "Too personal?", "Can it be returned?"
+Warm but in a hurry. Max 2 sentences per reply.""",
     },
     3: {
-        "emoji": "👴", "name": "Oud Loyalist", "name_ar": "عاشق العود الكلاسيكي",
-        "difficulty": 2,
-        "brief": "Expert. 30 years of oud. Tests your knowledge ruthlessly.",
-        "opening_en": "As-salamu alaykum. I've been wearing oud for thirty years. Tell me — what's the oud origin in Shatha Biladi? Cambodi? Hindi? And is it real oud or a reconstruction?",
-        "opening_ar": "السلام عليكم. أنا ألبس عود من ثلاثين سنة. قول لي — العود في شذى بلادي من وين؟ كامبودي؟ هندي؟ وهو عود حقيقي ولا تركيب؟",
-        "persona": """You are a Saudi gentleman, 50s, wearing oud daily for 30 years.
+        "emoji":"👴", "name":"Oud Loyalist", "name_ar":"عاشق العود الكلاسيكي",
+        "difficulty":2, "brief":"Expert. 30 years of oud. Tests your knowledge ruthlessly.",
+        "opening_en":"As-salamu alaykum. I've been wearing oud for thirty years. Tell me — what's the oud origin in Shatha Biladi? Cambodi? Hindi? And is it real oud or a reconstruction?",
+        "opening_ar":"السلام عليكم. أنا ألبس عود من ثلاثين سنة. قول لي — العود في شذى بلادي من وين؟ كامبودي؟ هندي؟ وهو عود حقيقي ولا تركيب؟",
+        "persona":"""You are a Saudi gentleman, 50s, wearing oud daily for 30 years.
 You own Ajmal, Arabian Oud, Amouage, Abdul Samad Al Qurashi.
-Polite but testing. You catch bluffs about oud origins immediately.
-Respect: genuine knowledge OR honest humility ("let me check with our perfumer").
-Buy signal: real expertise shown OR humble offer to get expert backup.
+Polite but testing. You catch bluffs immediately.
+You respect genuine knowledge OR honest humility ("let me check with our perfumer").
+Buy signal: real expertise OR humble offer to get expert backup.
 Objections: "Higher price than Arabian Oud for less pedigree", "How do I know it's not synthetic?", "Who is your nose?"
-Calm, formal, occasional Arabic: "ma sha Allah", "tayyib".""",
+Calm, formal, occasional Arabic: "ma sha Allah", "tayyib". Max 2 sentences per reply.""",
     },
 }
 
 LANG_OPTIONS = {
-    "English 🇬🇧":  {"code": "en",    "gtts": "en"},
-    "العربية 🇸🇦":   {"code": "ar",    "gtts": "ar"},
-    "Mixed 🔀":      {"code": "mixed", "gtts": "ar"},
+    "English 🇬🇧":  {"code":"en",    "gtts":"en"},
+    "العربية 🇸🇦":   {"code":"ar",    "gtts":"ar"},
+    "Mixed 🔀":      {"code":"mixed", "gtts":"ar"},
 }
 
-# ── database ────────────────────────────────────────────────────────────────────
-engine = create_engine("sqlite:///mansam.db", connect_args={"check_same_thread": False})
+# ── database ───────────────────────────────────────────────────────────────────
+engine = create_engine("sqlite:///mansam.db", connect_args={"check_same_thread":False})
 
 def init_db():
     with engine.connect() as c:
@@ -220,32 +289,28 @@ init_db()
 
 def upsert_agent(name):
     with engine.connect() as c:
-        c.execute(text(
-            "INSERT INTO agents(name) VALUES(:n) ON CONFLICT(name) DO NOTHING"), {"n": name})
-        c.commit()
-
-def save_session(agent, pid, lang, sale, svc, pts, transcript, debrief):
-    with engine.connect() as c:
-        c.execute(text("""INSERT INTO sessions
-            (agent,profile_id,language,sale_score,svc_score,points,transcript,debrief)
-            VALUES(:a,:p,:l,:s,:sv,:pt,:t,:db)"""),
-            dict(a=agent, p=pid, l=lang, s=sale, sv=svc, pt=pts,
-                 t=json.dumps(transcript), db=debrief))
-        c.execute(text(
-            "UPDATE agents SET total_points=total_points+:pt,sessions=sessions+1 WHERE name=:n"),
-            {"pt": pts, "n": agent})
+        c.execute(text("INSERT INTO agents(name) VALUES(:n) ON CONFLICT(name) DO NOTHING"),{"n":name})
         c.commit()
 
 def load_agent(name):
     with engine.connect() as c:
-        row = c.execute(
-            text("SELECT total_points,sessions FROM agents WHERE name=:n"),
-            {"n": name}).fetchone()
-    return dict(row._mapping) if row else {"total_points": 0, "sessions": 0}
+        row = c.execute(text("SELECT total_points,sessions FROM agents WHERE name=:n"),{"n":name}).fetchone()
+    return dict(row._mapping) if row else {"total_points":0,"sessions":0}
+
+def save_session(agent,pid,lang,sale,svc,pts,transcript,debrief):
+    with engine.connect() as c:
+        c.execute(text("""INSERT INTO sessions
+            (agent,profile_id,language,sale_score,svc_score,points,transcript,debrief)
+            VALUES(:a,:p,:l,:s,:sv,:pt,:t,:db)"""),
+            dict(a=agent,p=pid,l=lang,s=sale,sv=svc,pt=pts,
+                 t=json.dumps(transcript),db=debrief))
+        c.execute(text("UPDATE agents SET total_points=total_points+:pt,sessions=sessions+1 WHERE name=:n"),
+                  {"pt":pts,"n":agent})
+        c.commit()
 
 # ── Groq ───────────────────────────────────────────────────────────────────────
 def groq_client():
-    key = os.getenv("GROQ_API_KEY", "")
+    key = os.getenv("GROQ_API_KEY","")
     if not key:
         try: key = st.secrets["GROQ_API_KEY"]
         except Exception: pass
@@ -254,75 +319,59 @@ def groq_client():
         st.stop()
     return Groq(api_key=key)
 
-# ── TTS ────────────────────────────────────────────────────────────────────────
-def tts_b64(text: str, lang: str, profile_id: int = 1):
-    """Convert text to base64 MP3 using gTTS (reliable, free)."""
-    if not text or not text.strip():
-        return None
-    tts_lang = "ar" if lang in ("ar", "mixed") else "en"
+# ── TTS: gTTS (reliable, free) ─────────────────────────────────────────────────
+def tts_b64(text:str, lang:str, profile_id:int=1):
+    if not text or not text.strip(): return None
+    tts_lang = "ar" if lang in ("ar","mixed") else "en"
     try:
         buf = io.BytesIO()
         gTTS(text=text, lang=tts_lang, slow=False).write_to_fp(buf)
         buf.seek(0)
         data = buf.read()
-        if data:
-            return base64.b64encode(data).decode()
+        return base64.b64encode(data).decode() if data else None
     except Exception as e:
-        logger.warning(f"gTTS failed: {e}")
-    return None
+        logger.warning(f"gTTS: {e}")
+        return None
 
-# ── STT ────────────────────────────────────────────────────────────────────────
-def stt(audio_bytes: bytes, lang: str) -> str:
-    """Transcribe raw audio bytes via Groq Whisper."""
-    hint = {"en": "en", "ar": "ar", "mixed": None}.get(lang)
-    f = io.BytesIO(audio_bytes)
-    f.name = "recording.webm"
-    kw = dict(file=f, model="whisper-large-v3",
-              response_format="text", temperature=0.0)
-    if hint:
-        kw["language"] = hint
+# ── STT: Groq Whisper ──────────────────────────────────────────────────────────
+def stt(audio_bytes:bytes, lang:str) -> str:
+    hint = {"en":"en","ar":"ar","mixed":None}.get(lang)
+    f = io.BytesIO(audio_bytes); f.name = "r.webm"
+    kw = dict(file=f, model="whisper-large-v3", response_format="text", temperature=0.0)
+    if hint: kw["language"] = hint
     r = groq_client().audio.transcriptions.create(**kw)
-    return (r if isinstance(r, str) else r.text).strip()
+    return (r if isinstance(r,str) else r.text).strip()
 
-# ── LLM ────────────────────────────────────────────────────────────────────────
+# ── LLM: customer persona ──────────────────────────────────────────────────────
 def customer_reply(profile, messages, lang) -> str:
-    if lang == "ar":
+    if lang=="ar":
         lang_rule = f"تكلّم فقط بالعربية السعودية العامية. جملة الافتتاح: {profile['opening_ar']}"
-    elif lang == "mixed":
+    elif lang=="mixed":
         lang_rule = f"Mix Saudi Arabic and English freely. Start: {profile['opening_ar']}"
     else:
         lang_rule = f"Speak natural English. Opening: {profile['opening_en']}"
 
-    system = f"""{profile['persona']}
+    sys = f"""{profile['persona']}
 LANGUAGE: {lang_rule}
 KNOWLEDGE BASE:\n{MANSAM_KB}
-RULES:
-- Stay in character. Never reveal you are an AI.
-- MAX 2 short sentences per reply. Voice conversation — be concise.
-- React warmly to good technique; push back on generic pitches."""
+RULES: Stay in character. Never reveal you are AI. MAX 2 short sentences per reply."""
 
-    msgs = [{"role": "system", "content": system}]
+    msgs = [{"role":"system","content":sys}]
     if not messages:
-        msgs.append({"role": "user",
-                     "content": "[Session starts. Say your opening line — one sentence only.]"})
+        msgs.append({"role":"user","content":"[Session starts. Say your opening line — one sentence only.]"})
     else:
         msgs.extend(messages)
-
-    r = groq_client().chat.completions.create(
-        model=GROQ_MODEL, messages=msgs, max_tokens=90, temperature=0.9)
+    r = groq_client().chat.completions.create(model=GROQ_MODEL,messages=msgs,max_tokens=90,temperature=0.9)
     return r.choices[0].message.content.strip()
 
+# ── LLM: scorer ────────────────────────────────────────────────────────────────
 def score_transcript(transcript, lang) -> dict:
-    lang_note = {
-        "ar":    "Arabic session — include Arabic fluency in Service.",
-        "mixed": "Code-switching — reward natural blending in Service.",
-        "en":    "English session.",
-    }.get(lang, "")
-    system = f"""Warm, encouraging sales coach for Mansam Parfumery. {lang_note}
+    lang_note = {"ar":"Arabic session.","mixed":"Code-switching session.","en":"English session."}.get(lang,"")
+    sys = f"""Warm encouraging sales coach for Mansam Parfumery. {lang_note}
 {MANSAM_KB}
 SALE (1-10): discovery, product knowledge, storytelling, objections, close.
-SERVICE (1-10): warmth, patience, listening, cultural fit, pacing.
-Tone: POSITIVE and ENCOURAGING. Find genuine praise. Frame growth as opportunity.
+SERVICE (1-10): warmth, patience, listening, cultural fit.
+Tone: POSITIVE. Find genuine praise. Frame growth as opportunity.
 Return ONLY valid JSON:
 {{"sale_score":<1-10>,"sale_justification":"<warm sentence>",
   "service_score":<1-10>,"service_justification":"<warm sentence>",
@@ -331,329 +380,32 @@ Return ONLY valid JSON:
                   {{"observation":"<what>","tip":"<exact phrase>"}}],
   "next_challenge":"<profile + focus>",
   "encouragement":"<2 specific encouraging sentences>"}}"""
-    tx = "\n".join(
-        f"{'SALESPERSON' if m['role']=='user' else 'CUSTOMER'}: {m['content']}"
-        for m in transcript)
+    tx = "\n".join(f"{'SALESPERSON' if m['role']=='user' else 'CUSTOMER'}: {m['content']}" for m in transcript)
     r = groq_client().chat.completions.create(
         model=GROQ_MODEL,
-        messages=[{"role":"system","content":system},
-                  {"role":"user","content":f"Score:\n\n{tx}"}],
-        max_tokens=700, temperature=0.15)
+        messages=[{"role":"system","content":sys},{"role":"user","content":f"Score:\n\n{tx}"}],
+        max_tokens=700,temperature=0.15)
     raw = r.choices[0].message.content.strip()
     if raw.startswith("```"):
-        parts = raw.split("```"); raw = parts[1] if len(parts)>1 else raw
-        if raw.startswith("json"): raw = raw[4:].strip()
+        parts=raw.split("```"); raw=parts[1] if len(parts)>1 else raw
+        if raw.startswith("json"): raw=raw[4:].strip()
     return json.loads(raw)
 
-# ── helpers ─────────────────────────────────────────────────────────────────────
-def ss(k, d=None):  return st.session_state.get(k, d)
-def sset(k, v):     st.session_state[k] = v
+# ── helpers ────────────────────────────────────────────────────────────────────
+def ss(k,d=None): return st.session_state.get(k,d)
+def sset(k,v):    st.session_state[k]=v
 
 def topbar(right=""):
-    pts = ss("total_points", 0)
+    pts = ss("total_points",0)
     r   = right or (f"⭐ {pts} pts" if ss("agent_name") else "")
     st.markdown(
-        f'<div class="topbar">'
-        f'<span class="brand">🕌 Mansam Sales Coach</span>'
+        f'<div class="topbar"><span class="brand">🕌 Mansam Sales Coach</span>'
         f'<span class="pts">{r}</span></div>',
         unsafe_allow_html=True)
 
 def fmt_time(s):
-    m, sec = divmod(max(0, int(s)), 60)
+    m,sec = divmod(max(0,int(s)),60)
     return f"{m}:{sec:02d}"
-
-# ── Mic CSS — hides extra controls, styles the button as a clean orange circle ─
-# Works on Chrome, Firefox, Safari (desktop + mobile)
-# For iOS Safari iframe mic: we inject allow="microphone" onto Streamlit iframes
-MIC_CSS = """
-<style>
-/* ── Inject allow=microphone onto all iframes (fixes iOS Safari) ── */
-</style>
-<script>
-(function(){
-  // Add allow="microphone" to every iframe Streamlit creates
-  // iOS Safari requires this attribute for getUserMedia inside iframes
-  function patchIframes(){
-    document.querySelectorAll('iframe').forEach(function(f){
-      if(!f.getAttribute('allow') || !f.getAttribute('allow').includes('microphone')){
-        f.setAttribute('allow','microphone;camera;autoplay');
-      }
-    });
-  }
-  patchIframes();
-  // Re-run when DOM changes (Streamlit adds iframes dynamically)
-  new MutationObserver(patchIframes).observe(document.body,{childList:true,subtree:true});
-})();
-</script>
-<style>
-/* wrapper centred */
-div[data-testid="stAudioInput"]{
-    display:flex !important;
-    flex-direction:column !important;
-    align-items:center !important;
-    justify-content:center !important;
-    width:100% !important;
-    padding:0 !important;
-    background:transparent !important;
-    border:none !important;
-    box-shadow:none !important;
-    margin:.6rem 0 .3rem !important;
-}
-div[data-testid="stAudioInput"]>div{
-    background:transparent !important;
-    border:none !important;
-    box-shadow:none !important;
-    padding:0 !important;
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    flex-direction:column !important;
-}
-/* hide label, hint text, waveform, audio player, download */
-div[data-testid="stAudioInput"] label,
-div[data-testid="stAudioInput"] small,
-div[data-testid="stAudioInput"] p,
-div[data-testid="stAudioInput"] audio,
-div[data-testid="stAudioInput"] [data-testid="stAudioPlayer"],
-div[data-testid="stAudioInput"] [data-testid="stBaseButton-secondary"]
-{ display:none !important; }
-/* keep only the first button (record/stop) */
-div[data-testid="stAudioInput"] button:not(:first-of-type){ display:none !important; }
-/* style the record button */
-div[data-testid="stAudioInput"] button:first-of-type{
-    width:84px !important; height:84px !important;
-    border-radius:50% !important;
-    background:#E8521A !important;
-    border:none !important; cursor:pointer !important;
-    box-shadow:0 6px 26px rgba(232,82,26,.42) !important;
-    display:flex !important; align-items:center !important;
-    justify-content:center !important;
-    transition:transform .12s,background .15s !important;
-    -webkit-tap-highlight-color:transparent !important;
-    touch-action:manipulation !important;
-    outline:none !important;
-}
-div[data-testid="stAudioInput"] button:first-of-type:active{ transform:scale(.93) !important; }
-div[data-testid="stAudioInput"] button:first-of-type svg{
-    width:32px !important; height:32px !important;
-    stroke:#fff !important; color:#fff !important; fill:none !important;
-}
-/* pulse while recording */
-div[data-testid="stAudioInput"] button[title*="Stop"]:first-of-type,
-div[data-testid="stAudioInput"] button[aria-label*="Stop"]:first-of-type{
-    background:#B02A08 !important;
-    animation:mpulse 1.1s infinite !important;
-}
-@keyframes mpulse{
-    0%,100%{box-shadow:0 4px 20px rgba(176,42,8,.5);}
-    50%{box-shadow:0 4px 44px rgba(176,42,8,.88);}
-}
-</style>
-"""
-
-# ── helpers ─────────────────────────────────────────────────────────────────────
-def ss(k, d=None):  return st.session_state.get(k, d)
-def sset(k, v):     st.session_state[k] = v
-
-def topbar(right=""):
-    pts = ss("total_points", 0)
-    r   = right or (f"⭐ {pts} pts" if ss("agent_name") else "")
-    st.markdown(
-        f'<div class="topbar">'
-        f'<span class="brand">🕌 Mansam Sales Coach</span>'
-        f'<span class="pts">{r}</span></div>',
-        unsafe_allow_html=True)
-
-def fmt_time(s):
-    m, sec = divmod(max(0, int(s)), 60)
-    return f"{m}:{sec:02d}"
-
-# ── iOS-compatible recorder ───────────────────────────────────────────────────
-# st.audio_input runs inside a Streamlit iframe — iOS Safari blocks mic in iframes.
-# Solution: inject JS at the TOP-LEVEL page that requests mic directly,
-# encodes the recording as base64, and writes it into a hidden Streamlit text input.
-# Python reads the text input value on the next rerun.
-#
-# The hidden text input is identified by a data-testid we assign via a unique label.
-# We use JS to find the input by its sibling label text and write to it.
-
-MIC_JS = """
-<script>
-(function() {
-  // Only inject once per page load
-  if (window.__mansamMicInjected) return;
-  window.__mansamMicInjected = true;
-
-  var mediaRecorder, stream, chunks = [], isRecording = false;
-
-  // Find the hidden Streamlit text input by its label
-  function getInput() {
-    var labels = document.querySelectorAll('label[data-testid="stWidgetLabel"]');
-    for (var i = 0; i < labels.length; i++) {
-      if (labels[i].textContent.trim() === '__mic_bridge__') {
-        var container = labels[i].closest('[data-testid="stTextInput"]');
-        if (container) return container.querySelector('input');
-      }
-    }
-    return null;
-  }
-
-  // Write base64 audio to the hidden input and trigger Streamlit rerun
-  function submitAudio(b64) {
-    var inp = getInput();
-    if (!inp) { console.warn('Mansam: mic bridge input not found'); return; }
-    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value').set;
-    nativeInputValueSetter.call(inp, b64);
-    inp.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-
-  async function startRecording() {
-    try {
-      // iOS Safari requires exact constraints
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 16000
-        }
-      });
-    } catch (e) {
-      alert('Microphone access denied. Please allow mic in Safari Settings → Websites → Microphone.');
-      return false;
-    }
-
-    // iOS Safari supports audio/mp4 not webm
-    var mime = '';
-    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-      mime = 'audio/webm;codecs=opus';
-    } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-      mime = 'audio/mp4';
-    } else {
-      mime = 'audio/aac';
-    }
-
-    chunks = [];
-    mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
-    mediaRecorder.ondataavailable = function(e) {
-      if (e.data && e.data.size > 0) chunks.push(e.data);
-    };
-    mediaRecorder.onstop = function() {
-      stream.getTracks().forEach(function(t) { t.stop(); });
-      var blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-      var reader = new FileReader();
-      reader.onloadend = function() {
-        var b64 = reader.result.split(',')[1];
-        if (b64 && b64.length > 100) {
-          updateBtn('processing');
-          submitAudio(b64);
-        }
-      };
-      reader.readAsDataURL(blob);
-    };
-    mediaRecorder.start(100);
-    return true;
-  }
-
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
-    }
-  }
-
-  function updateBtn(state) {
-    var btn = document.getElementById('__mansam_mic_btn__');
-    if (!btn) return;
-    var hint = document.getElementById('__mansam_mic_hint__');
-    if (state === 'idle') {
-      btn.style.background = '#E8521A';
-      btn.style.animation  = '';
-      btn.style.boxShadow  = '0 6px 26px rgba(232,82,26,.42)';
-      if (hint) hint.textContent = 'Tap to respond';
-    } else if (state === 'recording') {
-      btn.style.background = '#B02A08';
-      btn.style.animation  = 'mpulse 1.1s infinite';
-      if (hint) hint.textContent = 'Tap to stop';
-    } else if (state === 'processing') {
-      btn.style.background = '#888';
-      btn.style.animation  = '';
-      if (hint) hint.textContent = 'Processing…';
-    }
-  }
-
-  // Poll for the button — it may not exist yet when this script first runs
-  function attachBtn() {
-    var btn = document.getElementById('__mansam_mic_btn__');
-    if (!btn) { setTimeout(attachBtn, 200); return; }
-    if (btn.__mansamAttached) return;
-    btn.__mansamAttached = true;
-
-    btn.addEventListener('click', async function() {
-      if (btn.style.background === 'rgb(136, 136, 136)') return; // processing
-
-      if (!isRecording) {
-        var ok = await startRecording();
-        if (ok) { isRecording = true; updateBtn('recording'); }
-      } else {
-        isRecording = false;
-        updateBtn('idle');
-        stopRecording();
-      }
-    });
-  }
-
-  // Start polling
-  setTimeout(attachBtn, 300);
-})();
-</script>
-
-<style>
-@keyframes mpulse {
-  0%,100% { box-shadow: 0 4px 20px rgba(176,42,8,.5); }
-  50%      { box-shadow: 0 4px 44px rgba(176,42,8,.88); }
-}
-/* hide the text input bridge completely */
-div[data-testid="stTextInput"]:has(label[data-testid="stWidgetLabel"]) {
-  /* We can't use :has() with dynamic text in CSS, hide via JS below */
-}
-</style>
-"""
-
-MIC_BUTTON_HTML = """
-<div style="display:flex;flex-direction:column;align-items:center;
-            margin:.8rem 0 .4rem;width:100%">
-  <button id="__mansam_mic_btn__"
-    style="width:84px;height:84px;border-radius:50%;
-           background:#E8521A;border:none;cursor:pointer;
-           box-shadow:0 6px 26px rgba(232,82,26,.42);
-           display:flex;align-items:center;justify-content:center;
-           -webkit-tap-highlight-color:transparent;touch-action:manipulation;
-           transition:transform .1s;outline:none">
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
-         stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="9" y="2" width="6" height="12" rx="3"/>
-      <path d="M5 10a7 7 0 0 0 14 0"/>
-      <line x1="12" y1="19" x2="12" y2="22"/>
-      <line x1="8"  y1="22" x2="16" y2="22"/>
-    </svg>
-  </button>
-  <div id="__mansam_mic_hint__"
-       style="font-size:.74rem;color:#B0B0B0;margin-top:.55rem;
-              letter-spacing:.04em;text-transform:uppercase">
-    Tap to respond
-  </div>
-</div>
-"""
-
-# CSS to hide the bridge text input visually
-HIDE_BRIDGE_CSS = """
-<style>
-/* hide the mic bridge input — identified by a zero-width space label trick */
-.mic-bridge-container { position:absolute !important; opacity:0 !important;
-    pointer-events:none !important; height:1px !important; overflow:hidden !important;
-    top:-9999px !important; left:-9999px !important; }
-</style>
-"""
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCREENS
@@ -663,35 +415,26 @@ def screen_welcome():
     topbar()
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("## What's your name?")
-    st.markdown(
-        "<p style='color:#888;font-size:.88rem;margin:.2rem 0 1.2rem'>"
-        "We'll track your progress and personalise your coaching.</p>",
-        unsafe_allow_html=True)
-    name = st.text_input("name", placeholder="Enter your name…",
-                         label_visibility="collapsed", key="name_input")
+    st.markdown("<p style='color:#888;font-size:.88rem;margin:.2rem 0 1.2rem'>We'll track your progress and personalise your coaching.</p>", unsafe_allow_html=True)
+    name = st.text_input("name", placeholder="Enter your name…", label_visibility="collapsed", key="name_input")
     if st.button("Continue →"):
         if name.strip():
             sset("agent_name", name.strip())
             upsert_agent(name.strip())
             data = load_agent(name.strip())
             sset("total_points", data["total_points"])
-            sset("screen", "pick_profile")
-            st.rerun()
+            sset("screen","pick_profile"); st.rerun()
         else:
             st.warning("Please enter your name.")
 
 
 def screen_pick_profile():
     topbar()
-    st.markdown(f"<br><p style='color:#888;font-size:.85rem'>Hi {ss('agent_name','')} 👋</p>",
-                unsafe_allow_html=True)
+    st.markdown(f"<br><p style='color:#888;font-size:.85rem'>Hi {ss('agent_name','')} 👋</p>", unsafe_allow_html=True)
     st.markdown("## Choose your customer")
-    st.markdown(
-        "<p style='color:#888;font-size:.87rem;margin:.2rem 0 1.2rem'>"
-        "You'll have a real sales conversation with this AI customer.</p>",
-        unsafe_allow_html=True)
-    for pid, p in PROFILES.items():
-        dots = "●"*p["difficulty"] + "○"*(3-p["difficulty"])
+    st.markdown("<p style='color:#888;font-size:.87rem;margin:.2rem 0 1.2rem'>You'll have a real sales conversation with this AI customer.</p>", unsafe_allow_html=True)
+    for pid,p in PROFILES.items():
+        dots = "●"*p["difficulty"]+"○"*(3-p["difficulty"])
         st.markdown(f"""
 <div style="background:#fff;border-radius:14px;padding:1.1rem 1.2rem;
             margin-bottom:.5rem;box-shadow:0 1px 6px rgba(0,0,0,.06);
@@ -705,44 +448,34 @@ def screen_pick_profile():
   </div>
 </div>""", unsafe_allow_html=True)
         if st.button(f"Start with {p['name']}", key=f"p{pid}", use_container_width=True):
-            sset("selected_profile", pid)
-            sset("screen", "pick_language")
-            st.rerun()
+            sset("selected_profile",pid); sset("screen","pick_language"); st.rerun()
 
 
 def screen_pick_language():
     topbar()
-    pid = ss("selected_profile", 1)
-    p   = PROFILES[pid]
-    st.markdown(f"<br><p style='color:#888;font-size:.84rem'>{p['emoji']} {p['name']}</p>",
-                unsafe_allow_html=True)
+    pid=ss("selected_profile",1); p=PROFILES[pid]
+    st.markdown(f"<br><p style='color:#888;font-size:.84rem'>{p['emoji']} {p['name']}</p>", unsafe_allow_html=True)
     st.markdown("## Session language")
-    st.markdown(
-        "<p style='color:#888;font-size:.87rem;margin:.2rem 0 1.3rem'>"
-        "Speak however feels natural on your shop floor.</p>",
-        unsafe_allow_html=True)
-    for label, cfg in LANG_OPTIONS.items():
+    st.markdown("<p style='color:#888;font-size:.87rem;margin:.2rem 0 1.3rem'>Speak however feels natural on your shop floor.</p>", unsafe_allow_html=True)
+    for label,cfg in LANG_OPTIONS.items():
         if st.button(label, key=f"l{cfg['code']}", use_container_width=True):
-            sset("session_lang", cfg["code"])
-            sset("screen", "instructions")
-            st.rerun()
+            sset("session_lang",cfg["code"]); sset("screen","instructions"); st.rerun()
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("← Back", use_container_width=False):
-        sset("screen", "pick_profile"); st.rerun()
+        sset("screen","pick_profile"); st.rerun()
 
 
 def screen_instructions():
     topbar()
-    pid  = ss("selected_profile", 1)
-    p    = PROFILES[pid]
-    lang = ss("session_lang", "en")
-    ll   = {"en":"English","ar":"Arabic","mixed":"Arabic + English"}.get(lang)
+    pid=ss("selected_profile",1); p=PROFILES[pid]
+    lang=ss("session_lang","en")
+    ll={"en":"English","ar":"Arabic","mixed":"Arabic + English"}.get(lang)
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"## Ready, {ss('agent_name','')}?")
     st.markdown(f"""
 <div class="card-dark" style="margin-bottom:1.2rem">
-  <p style="color:#C9A84C;font-weight:600;font-size:.78rem;
-            text-transform:uppercase;letter-spacing:.07em;margin:0 0 .6rem">Your session</p>
+  <p style="color:#C9A84C;font-weight:600;font-size:.78rem;text-transform:uppercase;
+            letter-spacing:.07em;margin:0 0 .6rem">Your session</p>
   <p style="color:#E5E5E5;font-size:.92rem;line-height:1.8;margin:0">
     {p['emoji']} &nbsp;Customer: <b style="color:#fff">{p['name']}</b><br>
     🗣️ &nbsp;Language: <b style="color:#fff">{ll}</b><br>
@@ -753,51 +486,48 @@ def screen_instructions():
         ("Customer speaks first","Listen to their opening line."),
         ("Tap the orange button","Speak your response naturally."),
         ("Tap again to send","Customer replies automatically."),
-        ("Keep going for 4 minutes","Natural back-and-forth."),
-        ("Coaching at the end","Scores, strengths, personalised tips."),
+        ("Keep going for 4 minutes","Natural back-and-forth — no scripts."),
+        ("Coaching at the end","Scores, strengths and personalised tips."),
     ]
     for i,(t,d) in enumerate(steps,1):
         st.markdown(f"""
 <div style="display:flex;gap:.8rem;align-items:flex-start;margin:.45rem 0">
-  <div style="min-width:24px;height:24px;border-radius:50%;background:#C9A84C;
-              color:#1A1A1A;display:flex;align-items:center;justify-content:center;
+  <div style="min-width:24px;height:24px;border-radius:50%;background:#C9A84C;color:#1A1A1A;
+              display:flex;align-items:center;justify-content:center;
               font-weight:700;font-size:.76rem;flex-shrink:0">{i}</div>
   <div style="font-size:.87rem;line-height:1.5;padding-top:.1rem">
     <b>{t}</b><br><span style="color:#888">{d}</span>
   </div>
 </div>""", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
-    st.info("💡 Allow microphone when the browser asks — required once only.")
+    st.info("💡 Allow microphone access when your browser asks — required once only.")
     if st.button("Start Session →", use_container_width=True):
-        # Clean slate for new session
-        # Clear all session keys for a fresh start
+        # Full clean slate
         for k in list(st.session_state.keys()):
-            if k not in ("agent_name","total_points","screen","selected_profile",
-                         "session_lang"):
+            if k not in ("agent_name","total_points","screen","selected_profile","session_lang"):
                 del st.session_state[k]
-        sset("screen", "session")
-        st.rerun()
+        sset("screen","session"); st.rerun()
     if st.button("← Change customer", use_container_width=False):
         sset("screen","pick_profile"); st.rerun()
 
 
 def screen_session():
-    # ── guard: if state missing go to welcome ─────────────────────────────────
+    # Guard
     if not ss("selected_profile") or not ss("session_lang") or not ss("agent_name"):
         sset("screen","welcome"); st.rerun(); return
 
-    pid  = ss("selected_profile", 1)
-    p    = PROFILES[pid]
-    lang = ss("session_lang", "en")
+    pid    = ss("selected_profile",1)
+    p      = PROFILES[pid]
+    lang   = ss("session_lang","en")
     is_rtl = lang in ("ar","mixed")
-    ll   = {"en":"EN 🇬🇧","ar":"AR 🇸🇦","mixed":"Mixed 🔀"}.get(lang,"")
+    ll     = {"en":"EN 🇬🇧","ar":"AR 🇸🇦","mixed":"Mixed 🔀"}.get(lang,"")
 
-    # ── messages — always from session_state directly ─────────────────────────
+    # Messages
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
     msgs = st.session_state["messages"]
 
-    # ── timer ─────────────────────────────────────────────────────────────────
+    # Timer
     if "session_start" not in st.session_state:
         st.session_state["session_start"] = time.time()
     elapsed   = time.time() - st.session_state["session_start"]
@@ -807,36 +537,34 @@ def screen_session():
     t_color   = "#E07000" if remaining < 60 else "#888"
     sp_turns  = sum(1 for m in msgs if m["role"]=="user")
 
-    # ── generate opening once ─────────────────────────────────────────────────
+    # Generate opening once
     if not st.session_state.get("opening_done"):
-        # Show loading state immediately so user sees something
+        # Show placeholder immediately
         st.markdown(
             f'<p style="font-size:.66rem;font-weight:600;color:#B0B0B0;'
             f'text-transform:uppercase;letter-spacing:.1em;margin:0 0 .45rem">'
             f'{"العميل" if is_rtl else "Customer"}</p>'
             f'<div style="background:#fff;border-radius:20px;padding:1.4rem 1.5rem;'
-            f'font-size:1.05rem;line-height:1.7;color:#B0B0B0;'
-            f'box-shadow:0 1px 10px rgba(0,0,0,.08);border-left:3px solid #E5E5E5">'
+            f'font-size:1.05rem;line-height:1.7;color:#C0C0C0;'
+            f'box-shadow:0 1px 10px rgba(0,0,0,.07);border-left:3px solid #E5E5E5">'
             f'{"جاري التحضير…" if is_rtl else "Starting session…"}</div>',
             unsafe_allow_html=True)
         with st.spinner(""):
-            opening  = customer_reply(p, [], lang)
-            audio_b64 = tts_b64(opening, lang, pid)
+            opening   = customer_reply(p, [], lang)
+            audio_out = tts_b64(opening, lang, pid)
         msgs.append({"role":"assistant","content":opening})
         st.session_state["opening_done"]  = True
         st.session_state["messages"]      = msgs
         st.session_state["display_msg"]   = opening
-        st.session_state["pending_audio"] = audio_b64
+        st.session_state["pending_audio"] = audio_out
         st.session_state["audio_played"]  = False
         st.rerun(); return
 
-    # ── auto-end when timer expires ───────────────────────────────────────────
+    # Auto-end
     if remaining <= 0 and sp_turns >= 1:
         sset("screen","scoring"); st.rerun(); return
 
-    # ── DISPLAY SNAPSHOT ─────────────────────────────────────────────────────
-    # display_msg is written atomically after each full round-trip.
-    # Never read from live msgs list — that causes flicker.
+    # Display snapshot — never reads from live msgs during render
     display_msg = st.session_state.get("display_msg") or next(
         (m["content"] for m in reversed(msgs) if m["role"]=="assistant"), "…")
 
@@ -849,18 +577,16 @@ def screen_session():
 
     # ── header ────────────────────────────────────────────────────────────────
     st.markdown(
-        f'<div style="display:flex;align-items:center;justify-content:space-between;'
-        f'padding:.3rem 0 .9rem">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;padding:.3rem 0 .9rem">'
         f'<span style="font-size:.79rem;color:#888">{p["emoji"]} {p["name"]} · {ll}</span>'
-        f'<span style="font-size:.79rem;color:{t_color};font-weight:500">'
-        f'⏱ {fmt_time(remaining)}</span></div>',
+        f'<span style="font-size:.79rem;color:{t_color};font-weight:500">⏱ {fmt_time(remaining)}</span>'
+        f'</div>',
         unsafe_allow_html=True)
 
     # ── customer bubble ───────────────────────────────────────────────────────
+    bdr     = "border-right:3px solid #C9A84C;border-left:none" if is_rtl else "border-left:3px solid #C9A84C"
+    txt_dir = "direction:rtl;text-align:right;" if is_rtl else ""
     cust_lbl = "العميل" if is_rtl else "Customer"
-    bdr      = ("border-right:3px solid #C9A84C;border-left:none"
-                if is_rtl else "border-left:3px solid #C9A84C")
-    txt_dir  = "direction:rtl;text-align:right;" if is_rtl else ""
 
     st.markdown(
         f'<p style="font-size:.66rem;font-weight:600;color:#B0B0B0;'
@@ -872,52 +598,52 @@ def screen_session():
         f'{display_msg}</div>',
         unsafe_allow_html=True)
 
-    # ── autoplay audio once ───────────────────────────────────────────────────
+    # ── autoplay audio ────────────────────────────────────────────────────────
     pending = st.session_state.get("pending_audio")
     if pending and not st.session_state.get("audio_played"):
         st.session_state["audio_played"]  = True
         st.session_state["pending_audio"] = None
-        if isinstance(pending, str) and len(pending) > 100:
+        if isinstance(pending,str) and len(pending) > 100:
             st.markdown(
                 f'<audio autoplay style="display:none">'
                 f'<source src="data:audio/mp3;base64,{pending}" type="audio/mp3"></audio>',
                 unsafe_allow_html=True)
 
-    # ── hint text ─────────────────────────────────────────────────────────────
-    hint_txt = "اضغط للرد" if is_rtl else "TAP TO RESPOND"
+    # ── hint ──────────────────────────────────────────────────────────────────
+    hint = "اضغط للرد" if is_rtl else "TAP TO RESPOND"
     st.markdown(
         f'<p style="text-align:center;font-size:.72rem;color:#C0C0C0;'
-        f'letter-spacing:.1em;font-weight:500;margin:.4rem 0 0">{hint_txt}</p>',
+        f'letter-spacing:.1em;font-weight:500;margin:.4rem 0 0">{hint}</p>',
         unsafe_allow_html=True)
 
-    # ── mic CSS + button ──────────────────────────────────────────────────────
-    st.markdown(MIC_CSS, unsafe_allow_html=True)
+    # ── mic button ────────────────────────────────────────────────────────────
+    # Turn-based key: changes after each processed turn → fresh empty widget
+    # overflow:visible on parents ensures full circle is never clipped
     mic_key   = f"mic_{sp_turns}"
-    audio_val = st.audio_input("Record", key=mic_key,
-                               label_visibility="collapsed")
+    audio_val = st.audio_input("Record", key=mic_key, label_visibility="collapsed")
 
-    # ── done: small subtle link, not a full button ────────────────────────────
-    st.markdown('<div class="done-link" style="text-align:center;margin-top:.2rem">',
+    # ── done link ─────────────────────────────────────────────────────────────
+    st.markdown('<div class="done-link" style="text-align:center;margin-top:.5rem">',
                 unsafe_allow_html=True)
-    done_clicked = st.button("Done — get feedback", key="done_btn")
+    done = st.button("Done — get feedback", key="done_btn")
     st.markdown('</div>', unsafe_allow_html=True)
-    if done_clicked:
+
+    if done:
         if sp_turns >= 1:
             sset("screen","scoring"); st.rerun(); return
         else:
             st.toast("Have at least one exchange first 💪")
         return
 
-    # ── process new recording ─────────────────────────────────────────────────
+    # ── process recording ─────────────────────────────────────────────────────
     if audio_val is not None and not st.session_state.get("processing_lock"):
         raw = audio_val.read()
         if raw:
-            ahash = hashlib.md5(raw).hexdigest()
-            turn_key = f"hash_{mic_key}"
-            if ahash != st.session_state.get(turn_key, ""):
+            ahash     = hashlib.md5(raw).hexdigest()
+            hash_key  = f"hash_{mic_key}"
+            if ahash != st.session_state.get(hash_key,""):
                 st.session_state["processing_lock"] = True
-                st.session_state[turn_key]           = ahash
-
+                st.session_state[hash_key]           = ahash
                 with st.spinner(""):
                     try:
                         spoken = stt(raw, lang)
@@ -925,11 +651,10 @@ def screen_session():
                         st.error(f"Transcription failed — please try again. ({e})")
                         st.session_state["processing_lock"] = False
                         st.rerun(); return
-
                     if spoken.strip():
-                        msgs.append({"role": "user",      "content": spoken})
-                        reply = customer_reply(p, msgs, lang)
-                        msgs.append({"role": "assistant", "content": reply})
+                        msgs.append({"role":"user","content":spoken})
+                        reply     = customer_reply(p, msgs, lang)
+                        msgs.append({"role":"assistant","content":reply})
                         audio_out = tts_b64(reply, lang, pid)
                         st.session_state["messages"]        = msgs
                         st.session_state["display_msg"]     = reply
@@ -940,54 +665,40 @@ def screen_session():
                     else:
                         st.session_state["processing_lock"] = False
                         st.rerun()
+
+
 def screen_scoring():
     topbar()
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("## Analysing your session…")
-    st.markdown(
-        "<p style='color:#888;font-size:.88rem'>"
-        "Your coach is reviewing the conversation.</p>",
-        unsafe_allow_html=True)
-    msgs = ss("messages", [])
-    lang = ss("session_lang","en")
-    pid  = ss("selected_profile",1)
+    st.markdown("<p style='color:#888;font-size:.88rem'>Your coach is reviewing the conversation.</p>", unsafe_allow_html=True)
+    msgs=ss("messages",[]); lang=ss("session_lang","en"); pid=ss("selected_profile",1)
     with st.spinner(""):
         try:
-            scores = score_transcript(msgs, lang)
+            scores = score_transcript(msgs,lang)
         except Exception as e:
             st.error(f"Scoring error: {e}")
             if st.button("Retry"): st.rerun()
             return
-    perf = int((scores["sale_score"]+scores["service_score"])*5)
-    pts  = 10 + perf
-    save_session(ss("agent_name",""), pid, lang,
-                 scores["sale_score"], scores["service_score"],
-                 pts, msgs, json.dumps(scores))
-    sset("last_scores", scores)
-    sset("last_points", pts)
-    sset("total_points", ss("total_points",0)+pts)
-    sset("screen","debrief")
-    st.rerun()
+    perf=int((scores["sale_score"]+scores["service_score"])*5); pts=10+perf
+    save_session(ss("agent_name",""),pid,lang,scores["sale_score"],scores["service_score"],pts,msgs,json.dumps(scores))
+    sset("last_scores",scores); sset("last_points",pts)
+    sset("total_points",ss("total_points",0)+pts)
+    sset("screen","debrief"); st.rerun()
 
 
 def screen_debrief():
-    scores = ss("last_scores",{})
-    pts    = ss("last_points",10)
-    name   = ss("agent_name","")
-    lang   = ss("session_lang","en")
-    pid    = ss("selected_profile",1)
-    p      = PROFILES[pid]
-    sale   = scores.get("sale_score",0)
-    svc    = scores.get("service_score",0)
-    enc    = scores.get("encouragement","")
+    scores=ss("last_scores",{}); pts=ss("last_points",10)
+    name=ss("agent_name",""); lang=ss("session_lang","en")
+    pid=ss("selected_profile",1); p=PROFILES[pid]
+    sale=scores.get("sale_score",0); svc=scores.get("service_score",0)
+    enc=scores.get("encouragement","")
 
     topbar(f"⭐ {ss('total_points',0)} pts total")
-
     st.markdown(f"""<br>
 <div class="card-dark" style="text-align:center">
   <div style="font-size:2.2rem;margin-bottom:.4rem">🎉</div>
-  <div style="font-size:1.35rem;font-weight:700;color:#C9A84C;margin-bottom:.2rem">
-    Well done, {name}!</div>
+  <div style="font-size:1.35rem;font-weight:700;color:#C9A84C;margin-bottom:.2rem">Well done, {name}!</div>
   <div style="color:#888;font-size:.84rem">{p['emoji']} {p['name']} · session complete</div>
 </div>""", unsafe_allow_html=True)
 
@@ -1013,70 +724,52 @@ def screen_debrief():
 
     if enc:
         st.markdown(
-            f'<div class="card" style="border-left:3px solid #C9A84C;'
-            f'font-size:.9rem;line-height:1.6">{enc}</div>',
+            f'<div class="card" style="border-left:3px solid #C9A84C;font-size:.9rem;line-height:1.6">{enc}</div>',
             unsafe_allow_html=True)
 
-    strongs = scores.get("strong_points",[])
+    strongs=scores.get("strong_points",[])
     if strongs:
-        st.markdown(
-            '<p style="font-size:.72rem;font-weight:600;color:#B0B0B0;'
-            'text-transform:uppercase;letter-spacing:.09em;margin:.6rem 0 .35rem">'
-            'What you did well</p>', unsafe_allow_html=True)
-        chips = "".join(f'<span class="chip">{s}</span>' for s in strongs)
-        st.markdown(f'<div style="margin-bottom:.8rem">{chips}</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<p style="font-size:.72rem;font-weight:600;color:#B0B0B0;text-transform:uppercase;letter-spacing:.09em;margin:.6rem 0 .35rem">What you did well</p>', unsafe_allow_html=True)
+        st.markdown("".join(f'<span class="chip">{s}</span>' for s in strongs), unsafe_allow_html=True)
 
-    grows = scores.get("growth_areas",[])
+    grows=scores.get("growth_areas",[])
     if grows:
-        st.markdown(
-            '<p style="font-size:.72rem;font-weight:600;color:#B0B0B0;'
-            'text-transform:uppercase;letter-spacing:.09em;margin:.6rem 0 .35rem">'
-            'One thing to try next time</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size:.72rem;font-weight:600;color:#B0B0B0;text-transform:uppercase;letter-spacing:.09em;margin:.8rem 0 .35rem">One thing to try next time</p>', unsafe_allow_html=True)
         for g in grows:
             st.markdown(
                 f'<div class="grow-item">{g.get("observation","")}'
                 f'<div class="try">Try: &ldquo;{g.get("tip","")}&rdquo;</div></div>',
                 unsafe_allow_html=True)
 
-    nxt = scores.get("next_challenge","")
+    nxt=scores.get("next_challenge","")
     if nxt:
         st.markdown(
             f'<div style="background:#FBF6E9;border-radius:12px;padding:.85rem 1rem;'
-            f'margin-top:.5rem;font-size:.87rem;color:#8B6914">'
-            f'🎯 <b>Next challenge:</b> {nxt}</div>',
+            f'margin-top:.5rem;font-size:.87rem;color:#8B6914">🎯 <b>Next challenge:</b> {nxt}</div>',
             unsafe_allow_html=True)
 
-    # audio summary
-    summary = (f"Well done {name}. Sale score {sale}, service score {svc}. "
-               f"You earned {pts} points. {enc}")
     with st.spinner(""):
-        b64 = tts_b64(summary, "en")
+        b64 = tts_b64(f"Well done {name}. Sale score {sale}, service score {svc}. You earned {pts} points. {enc}", "en")
     if b64:
         st.markdown('<hr class="div">', unsafe_allow_html=True)
-        st.markdown(
-            '<p style="font-size:.75rem;color:#B0B0B0;margin-bottom:.3rem">'
-            '🔊 Hear your feedback</p>', unsafe_allow_html=True)
-        st.markdown(
-            f'<audio controls src="data:audio/mp3;base64,{b64}"></audio>',
-            unsafe_allow_html=True)
+        st.markdown('<p style="font-size:.75rem;color:#B0B0B0;margin-bottom:.3rem">🔊 Hear your feedback</p>', unsafe_allow_html=True)
+        st.markdown(f'<audio controls src="data:audio/mp3;base64,{b64}"></audio>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Practice Again →", use_container_width=True):
-        # Clear session keys, keep agent identity
         for k in list(st.session_state.keys()):
             if k not in ("agent_name","total_points","screen"):
                 del st.session_state[k]
         sset("screen","pick_profile"); st.rerun()
 
-    st.markdown('<p style="text-align:center;margin-top:.6rem">', unsafe_allow_html=True)
-    if st.button("Switch agent", use_container_width=False):
+    st.markdown('<div class="done-link" style="text-align:center;margin-top:.6rem">', unsafe_allow_html=True)
+    if st.button("Switch agent", key="switch_btn"):
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
-    st.markdown('</p>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ── router ──────────────────────────────────────────────────────────────────────
+# ── router ─────────────────────────────────────────────────────────────────────
 def main():
     screen = ss("screen","welcome")
     {
